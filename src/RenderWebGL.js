@@ -382,6 +382,7 @@ class RenderWebGL extends EventEmitter {
 
     // tw: implement high quality pen option
     setUseHighQualityRender (enabled) {
+        enabled = true; // PMDESKTOP_STAGE_PATCH: high quality pen is always on (section 21)
         this.dirty = true;
         this.useHighQualityRender = enabled;
         this.emit(RenderConstants.Events.UseHighQualityRenderChanged, enabled);
