@@ -48,7 +48,7 @@
     "webpack-dev-server": "3.11.2"
   },
   "peerDependencies": {
-    "scratch-render-fonts": "github:PenguinMod/penguinmod-render-fonts#master"
+    "scratch-render-fonts": "github:Wolowolf/penguinmod-render-fonts#4dda62c707f64505266aa62f7a6cc84f0e5812fd"
   },
   "dependencies": {
     "grapheme-breaker": "0.3.2",
@@ -57,7 +57,7 @@
     "linebreak": "0.3.0",
     "minilog": "3.1.0",
     "raw-loader": "^0.5.1",
-    "scratch-svg-renderer": "git+https://github.com/PenguinMod/penguinmod-svg-renderer.git",
+    "scratch-svg-renderer": "github:Wolowolf/penguinmod-svg-renderer#e0ded0c680a298d539ed439288573a2e87002974",
     "twgl.js": "4.4.0"
   },
   "private": true
