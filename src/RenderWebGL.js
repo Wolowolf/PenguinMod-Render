@@ -10,6 +10,7 @@ const Drawable = require('./Drawable');
 const Rectangle = require('./Rectangle');
 const PenSkin = require('./PenSkin');
 const RenderConstants = require('./RenderConstants');
+const Silhouette = require('./Silhouette');
 const ShaderManager = require('./ShaderManager');
 const SVGSkin = require('./SVGSkin');
 const TextBubbleSkin = require('./TextBubbleSkin');
@@ -265,6 +266,17 @@ class RenderWebGL extends EventEmitter {
 
         this.offscreenTouching = false;
 
+        // Touching cache: each Drawable keeps its bounds as a touching candidate (and skips preparing its skin for
+        // CPU pixel tests again) while its _touchingCacheEpoch equals this number. It goes up at every draw() call
+        // (so nothing is kept longer than one frame) and when renderer-wide settings change; Drawable changes clear
+        // their own entry.
+        this._touchingEpoch = 0;
+        // Goes up whenever a Drawable's touching data changes, a drawable is created, removed or reordered, or the
+        // private skin settings change (see _cachedCandidatesTouching).
+        this._touchingChanges = 0;
+        // Touching tables, one per list of candidate IDs (see _cachedCandidatesTouching).
+        this._touchingTables = new WeakMap();
+
         this.dirty = true;
 
         /**
@@ -389,6 +401,7 @@ class RenderWebGL extends EventEmitter {
         this._updateRenderQuality();
     }
     _updateRenderQuality () {
+        this._touchingEpoch++;
         if (this._penSkinId !== null) {
             const skin = this._allSkins[this._penSkinId];
             if (skin) {
@@ -412,6 +425,7 @@ class RenderWebGL extends EventEmitter {
      */
     setPrivateSkinAccess (allowPrivateSkinAccess) {
         this.allowPrivateSkinAccess = allowPrivateSkinAccess;
+        this._touchingChanges++;
         this.emit(
             RenderConstants.Events.AllowPrivateSkinAccessChanged,
             allowPrivateSkinAccess
@@ -425,6 +439,7 @@ class RenderWebGL extends EventEmitter {
     setMaxTextureDimension (newMax) {
         const hardwareLimit = this._gl.getParameter(this._gl.MAX_TEXTURE_SIZE);
         this.maxTextureDimension = Math.min(newMax, hardwareLimit);
+        this._touchingEpoch++;
     }
 
     /**
@@ -801,6 +816,7 @@ class RenderWebGL extends EventEmitter {
         const drawableID = this._nextDrawableId++;
         const drawable = new Drawable(drawableID, this);
         this._allDrawables[drawableID] = drawable;
+        this._touchingChanges++;
         this._addToDrawList(drawableID, group);
         // tw: implement high quality render
         drawable.setHighQuality(this.useHighQualityRender);
@@ -828,6 +844,7 @@ class RenderWebGL extends EventEmitter {
             return;
         }
         skin.private = true;
+        this._touchingChanges++;
     }
 
     /**
@@ -848,6 +865,7 @@ class RenderWebGL extends EventEmitter {
      * names
      */
     setLayerGroupOrdering (groupOrdering) {
+        this._touchingChanges++;
         const oldGroups = {};
         for (let i = 0; i < this._groupOrdering.length; i++) {
             const groupID = this._groupOrdering[i];
@@ -917,6 +935,7 @@ class RenderWebGL extends EventEmitter {
      * @param {string} group Group name that the drawable belongs to
      */
     destroyDrawable (drawableID, group) {
+        this._touchingChanges++;
         if (
             !group ||
             !Object.prototype.hasOwnProperty.call(this._layerGroups, group)
@@ -977,6 +996,7 @@ class RenderWebGL extends EventEmitter {
      * @return {?number} New order if changed, or null.
      */
     setDrawableOrder (drawableID, order, group, optIsRelative, optMin) {
+        this._touchingChanges++;
         if (
             !group ||
             !Object.prototype.hasOwnProperty.call(this._layerGroups, group)
@@ -1045,6 +1065,8 @@ class RenderWebGL extends EventEmitter {
      * Draw all current drawables and present the frame on the canvas.
      */
     draw () {
+        // A new frame: forget all cached touching data.
+        this._touchingEpoch++;
         // practically doesnt matter with XR enabled
         if (!this.dirty) {
             return;
@@ -1521,7 +1543,7 @@ class RenderWebGL extends EventEmitter {
      * @returns {boolean} True if the Drawable is touching one of candidateIDs.
      */
     isTouchingDrawables (drawableID, candidateIDs = this._drawList) {
-        const candidates = this._candidatesTouching(
+        const candidates = this._cachedCandidatesTouching(drawableID, candidateIDs) || this._candidatesTouching(
             drawableID,
             // even if passed an invisible drawable, we will NEVER touch it!
             candidateIDs.filter(id => this._allDrawables[id]._visible)
@@ -2062,15 +2084,8 @@ class RenderWebGL extends EventEmitter {
                     // contents of a private skin.
                     if (!this.allowPrivateSkinAccess && drawable.skin.private) continue;
 
-                    // Update the CPU position data
-                    drawable.updateCPURenderAttributes();
-                    const candidateBounds = drawable.getFastBounds();
-
-                    // Push bounds out to integers. If a drawable extends out into half a pixel, that half-pixel still
-                    // needs to be tested. Plus, in some areas we construct another rectangle from the union of these,
-                    // and iterate over its pixels (width * height). Turns out that doesn't work so well when the
-                    // width/height aren't integers.
-                    candidateBounds.snapToInt();
+                    // Update the CPU position data and get the bounds, pushed out to integers (cached: see below).
+                    const candidateBounds = this._getTouchingCandidateBounds(drawable);
 
                     if (bounds.intersects(candidateBounds)) {
                         result.push({
@@ -2082,6 +2097,127 @@ class RenderWebGL extends EventEmitter {
             }
         }
         return result;
+    }
+
+    /**
+     * Touching table: when the same list of candidates (same array, same contents, 8 or more) is asked about again
+     * and nothing that could change the answer happened in between (no Drawable changed, no drawable created,
+     * removed or reordered, no silhouette updated, same frame), the drawables of the list and their cached bounds
+     * are reused, so each query only compares bounds. The first query after a change does the full check.
+     * @param {int} drawableID - ID for drawable of query.
+     * @param {Array<int>} candidateIDs - Candidates for touching query, visible or not.
+     * @return {?Array< {id, drawable, intersection} >} the same as _candidatesTouching(drawableID, the visible
+     * candidateIDs), or null when no table can be used.
+     * @private
+     */
+    _cachedCandidatesTouching (drawableID, candidateIDs) {
+        if (candidateIDs.length < 8) return null;
+        let table = this._touchingTables.get(candidateIDs);
+        if (!table) {
+            table = {epoch: -1, changes: -1, silhouettes: -1, source: null, ids: null, drawables: null, rects: null};
+            this._touchingTables.set(candidateIDs, table);
+        }
+        const bounds = this._touchingBounds(drawableID);
+        if (
+            table.epoch !== this._touchingEpoch ||
+            table.changes !== this._touchingChanges ||
+            table.silhouettes !== Silhouette.updateCount
+        ) {
+            // Something changed since this list was last asked about: do the full check this time.
+            table.epoch = this._touchingEpoch;
+            table.changes = this._touchingChanges;
+            table.silhouettes = Silhouette.updateCount;
+            table.source = null;
+            return null;
+        }
+        const source = table.source;
+        let same = source !== null && source.length === candidateIDs.length;
+        for (let i = 0; same && i < source.length; i++) same = source[i] === candidateIDs[i];
+        if (!same) {
+            // Same order as _candidatesTouching. Drawables without a skin and text bubbles are left out; visibility
+            // and private skins are checked at every query, as before. Bounds are filled in when first needed.
+            const ids = [];
+            const drawables = [];
+            for (let index = candidateIDs.length - 1; index >= 0; index--) {
+                const id = candidateIDs[index];
+                const drawable = this._allDrawables[id];
+                // A missing drawable makes the full check throw, as before.
+                if (!drawable) return null;
+                if (!drawable.skin || drawable.skin instanceof TextBubbleSkin) continue;
+                // Other skins are prepared at every query (see _getTouchingCandidateBounds).
+                if (drawable.skin.constructor !== SVGSkin && drawable.skin.constructor !== BitmapSkin) return null;
+                ids.push(id);
+                drawables.push(drawable);
+            }
+            table.source = candidateIDs.slice();
+            table.ids = ids;
+            table.drawables = drawables;
+            table.rects = new Array(ids.length).fill(null);
+        }
+        const result = [];
+        // Like _candidatesTouching: nothing to do (and nothing prepared) when the asker has no bounds.
+        if (bounds === null) return result;
+        const {ids, drawables, rects} = table;
+        for (let i = 0; i < ids.length; i++) {
+            const id = ids[i];
+            const drawable = drawables[i];
+            if (id === drawableID || !drawable._visible) continue;
+            if (!this.allowPrivateSkinAccess && drawable.skin.private) continue;
+            let candidateBounds = rects[i];
+            if (candidateBounds === null) {
+                // Not prepared since the last change: prepare it now, as the full check would.
+                candidateBounds = rects[i] = this._getTouchingCandidateBounds(drawable);
+                if (
+                    table.epoch !== this._touchingEpoch ||
+                    table.changes !== this._touchingChanges ||
+                    table.silhouettes !== Silhouette.updateCount
+                ) {
+                    // Preparing changed something: the table can't be trusted any more.
+                    table.source = null;
+                    table.epoch = -1;
+                    return null;
+                }
+            }
+            if (bounds.intersects(candidateBounds)) {
+                result.push({id, drawable, intersection: Rectangle.intersect(bounds, candidateBounds)});
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Update a touching candidate's CPU render attributes and return its bounds, pushed out to integers. If a
+     * drawable extends out into half a pixel, that half-pixel still needs to be tested. Plus, in some areas we
+     * construct another rectangle from the union of these, and iterate over its pixels (width * height). Turns out
+     * that doesn't work so well when the width/height aren't integers.
+     * Cached: when many sprites ask a touching question in the same frame, each candidate is prepared once and its
+     * bounds are reused, until the candidate changes (see Drawable._touchingCacheEpoch) or the next frame. Preparing
+     * again is only skipped for SVG and bitmap skins whose silhouette has not changed since, because then it would
+     * change nothing; other skins (pen, text, ...) are prepared every time, as before.
+     * Do not modify the returned Rectangle.
+     * @param {Drawable} drawable - a candidate with a skin.
+     * @return {Rectangle} the candidate's bounds.
+     * @private
+     */
+    _getTouchingCandidateBounds (drawable) {
+        const skin = drawable.skin;
+        if (
+            drawable._touchingCacheEpoch !== this._touchingEpoch ||
+            (skin.constructor !== SVGSkin && skin.constructor !== BitmapSkin) ||
+            drawable._touchingCacheSilhouette !== skin._silhouette ||
+            !skin._silhouette ||
+            drawable._touchingCacheSilhouetteCount !== skin._silhouette._updateCount
+        ) {
+            drawable.updateCPURenderAttributes();
+            // Preparing can alter the skin (and clear this cache entry), so the bounds are read afterwards.
+            if (drawable._touchingCacheEpoch !== this._touchingEpoch) {
+                drawable.getFastBounds(drawable._touchingCacheBounds).snapToInt();
+                drawable._touchingCacheEpoch = this._touchingEpoch;
+            }
+            drawable._touchingCacheSilhouette = skin._silhouette;
+            drawable._touchingCacheSilhouetteCount = skin._silhouette ? skin._silhouette._updateCount : -1;
+        }
+        return drawable._touchingCacheBounds;
     }
 
     /**

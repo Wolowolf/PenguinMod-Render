@@ -124,6 +124,12 @@ class Silhouette {
     this._lazyData = null;
 
     /**
+     * Counts calls to update(), so cached touching data can tell when the silhouette changed.
+     * @type {number}
+     */
+    this._updateCount = 0;
+
+    /**
      * The data representing a skin's silhouette shape.
      * @type {Uint8ClampedArray}
      */
@@ -144,6 +150,8 @@ class Silhouette {
    * rendering can be queried from.
    */
   update(bitmapData, isPremultiplied = false) {
+    this._updateCount++;
+    Silhouette.updateCount++;
     let imageData;
     if (bitmapData instanceof ImageData) {
       // If handed ImageData directly, use it directly.
@@ -310,5 +318,11 @@ class Silhouette {
     return __SilhouetteUpdateCanvas;
   }
 }
+
+/**
+ * Counts update() calls of all silhouettes, so cached touching tables can tell when any silhouette changed.
+ * @type {number}
+ */
+Silhouette.updateCount = 0;
 
 module.exports = Silhouette;

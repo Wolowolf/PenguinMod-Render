@@ -125,6 +125,15 @@ class Drawable {
         this._transformedHullPoints = null;
         this._transformedHullDirty = true;
 
+        // Touching cache (see RenderWebGL._getTouchingCandidateBounds): this Drawable's bounds as a touching
+        // candidate, valid while _touchingCacheEpoch equals the renderer's _touchingEpoch. Anything that changes
+        // the Drawable's position, size, direction, shape (including shape-changing effects), skin or visibility
+        // calls _clearTouchingCache.
+        this._touchingCacheEpoch = -1;
+        this._touchingCacheBounds = new Rectangle();
+        this._touchingCacheSilhouette = null;
+        this._touchingCacheSilhouetteCount = -1;
+
         this._skinWasAltered = this._skinWasAltered.bind(this);
 
         this.isTouching = this._isTouchingNever;
@@ -140,6 +149,7 @@ class Drawable {
 
     setHighQuality (highQuality) {
         this._highQuality = highQuality;
+        this._clearTouchingCache();
     }
 
     /**
@@ -158,6 +168,15 @@ class Drawable {
         this._transformDirty = true;
         this._inverseTransformDirty = true;
         this._transformedHullDirty = true;
+        this._clearTouchingCache();
+    }
+
+    /**
+     * Forget this Drawable's cached touching data and tell the renderer that touching answers may have changed.
+     */
+    _clearTouchingCache () {
+        this._touchingCacheEpoch = -1;
+        this._renderer._touchingChanges++;
     }
 
     /**
@@ -283,6 +302,7 @@ class Drawable {
     updateVisible (visible) {
         if (this._visible !== visible) {
             this._visible = visible;
+            this._clearTouchingCache();
             this._renderer.dirty = true;
             this.setConvexHullDirty();
         }
@@ -539,6 +559,7 @@ class Drawable {
      */
     setConvexHullDirty () {
         this._convexHullDirty = true;
+        this._clearTouchingCache();
     }
 
     /**
@@ -548,6 +569,7 @@ class Drawable {
     setConvexHullPoints (points) {
         this._convexHullPoints = points;
         this._convexHullDirty = false;
+        this._clearTouchingCache();
 
         // Re-create the "transformed hull points" array.
         // We only do this when the hull points change to avoid unnecessary allocations and GC.
