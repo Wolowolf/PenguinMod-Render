@@ -20,6 +20,34 @@ const CanvasMeasurementProvider = require('./util/canvas-measurement-provider');
 const log = require('./util/log');
 
 const __isTouchingDrawablesPoint = twgl.v3.create();
+
+/**
+ * Drawable methods whose behaviour the touching cache relies on. Some extensions (e.g. SharkPool Camera,
+ * SharkPool Looks Expanded) replace them to move or reshape sprites behind the renderer's back; then the
+ * cache is not used (see _touchingCacheUsable). These are the originals.
+ * @type {object.<string, Function>}
+ */
+const touchingCacheOriginals = {
+    getFastBounds: Drawable.prototype.getFastBounds,
+    getAABB: Drawable.prototype.getAABB,
+    getBounds: Drawable.prototype.getBounds,
+    _getTransformedHullPoints: Drawable.prototype._getTransformedHullPoints,
+    updateCPURenderAttributes: Drawable.prototype.updateCPURenderAttributes,
+    updateMatrix: Drawable.prototype.updateMatrix,
+    _calculateTransform: Drawable.prototype._calculateTransform,
+    setTransformDirty: Drawable.prototype.setTransformDirty,
+    setConvexHullDirty: Drawable.prototype.setConvexHullDirty,
+    setConvexHullPoints: Drawable.prototype.setConvexHullPoints,
+    updatePosition: Drawable.prototype.updatePosition,
+    updateDirection: Drawable.prototype.updateDirection,
+    updateScale: Drawable.prototype.updateScale,
+    updateTransform: Drawable.prototype.updateTransform,
+    updateVisible: Drawable.prototype.updateVisible,
+    updateEffect: Drawable.prototype.updateEffect,
+    updateProperties: Drawable.prototype.updateProperties,
+    _skinWasAltered: Drawable.prototype._skinWasAltered,
+    setHighQuality: Drawable.prototype.setHighQuality
+};
 const __candidatesBounds = new Rectangle();
 const __fenceBounds = new Rectangle();
 const __touchingColor = new Uint8ClampedArray(4);
@@ -2069,6 +2097,7 @@ class RenderWebGL extends EventEmitter {
      * @return {?Array< {id, drawable, intersection} >} Filtered candidates with useful data.
      */
     _candidatesTouching (drawableID, candidateIDs) {
+        const useCache = this._touchingCacheUsable();
         const bounds = this._touchingBounds(drawableID);
         const result = [];
         if (bounds === null) return result;
@@ -2085,7 +2114,15 @@ class RenderWebGL extends EventEmitter {
                     if (!this.allowPrivateSkinAccess && drawable.skin.private) continue;
 
                     // Update the CPU position data and get the bounds, pushed out to integers (cached: see below).
-                    const candidateBounds = this._getTouchingCandidateBounds(drawable);
+                    let candidateBounds;
+                    if (useCache) {
+                        candidateBounds = this._getTouchingCandidateBounds(drawable);
+                    } else {
+                        // without the cache, exactly as before section 39
+                        drawable.updateCPURenderAttributes();
+                        candidateBounds = drawable.getFastBounds();
+                        candidateBounds.snapToInt();
+                    }
 
                     if (bounds.intersects(candidateBounds)) {
                         result.push({
@@ -2100,6 +2137,45 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
+     * Whether the touching cache can be used: no extension has replaced the Drawable methods it relies on, or the
+     * renderer's own touching helpers on this renderer.
+     * @return {boolean} true if the cache can be used.
+     * @private
+     */
+    _touchingCacheUsable () {
+        const proto = Drawable.prototype;
+        const o = touchingCacheOriginals;
+        // written out (not a loop over names): this runs for every touching query
+        if (
+            proto.getFastBounds !== o.getFastBounds ||
+            proto.getAABB !== o.getAABB ||
+            proto.getBounds !== o.getBounds ||
+            proto._getTransformedHullPoints !== o._getTransformedHullPoints ||
+            proto.updateCPURenderAttributes !== o.updateCPURenderAttributes ||
+            proto.updateMatrix !== o.updateMatrix ||
+            proto._calculateTransform !== o._calculateTransform ||
+            proto.setTransformDirty !== o.setTransformDirty ||
+            proto.setConvexHullDirty !== o.setConvexHullDirty ||
+            proto.setConvexHullPoints !== o.setConvexHullPoints ||
+            proto.updatePosition !== o.updatePosition ||
+            proto.updateDirection !== o.updateDirection ||
+            proto.updateScale !== o.updateScale ||
+            proto.updateTransform !== o.updateTransform ||
+            proto.updateVisible !== o.updateVisible ||
+            proto.updateEffect !== o.updateEffect ||
+            proto.updateProperties !== o.updateProperties ||
+            proto._skinWasAltered !== o._skinWasAltered ||
+            proto.setHighQuality !== o.setHighQuality
+        ) {
+            return false;
+        }
+        const own = RenderWebGL.prototype;
+        return this._candidatesTouching === own._candidatesTouching &&
+            this._touchingBounds === own._touchingBounds &&
+            this._getTouchingCandidateBounds === own._getTouchingCandidateBounds;
+    }
+
+    /**
      * Touching table: when the same list of candidates (same array, same contents, 8 or more) is asked about again
      * and nothing that could change the answer happened in between (no Drawable changed, no drawable created,
      * removed or reordered, no silhouette updated, same frame), the drawables of the list and their cached bounds
@@ -2111,7 +2187,7 @@ class RenderWebGL extends EventEmitter {
      * @private
      */
     _cachedCandidatesTouching (drawableID, candidateIDs) {
-        if (candidateIDs.length < 8) return null;
+        if (candidateIDs.length < 8 || !this._touchingCacheUsable()) return null;
         let table = this._touchingTables.get(candidateIDs);
         if (!table) {
             table = {epoch: -1, changes: -1, silhouettes: -1, source: null, ids: null, drawables: null, rects: null};
@@ -2138,6 +2214,7 @@ class RenderWebGL extends EventEmitter {
             // and private skins are checked at every query, as before. Bounds are filled in when first needed.
             const ids = [];
             const drawables = [];
+            const skins = [];
             for (let index = candidateIDs.length - 1; index >= 0; index--) {
                 const id = candidateIDs[index];
                 const drawable = this._allDrawables[id];
@@ -2148,19 +2225,27 @@ class RenderWebGL extends EventEmitter {
                 if (drawable.skin.constructor !== SVGSkin && drawable.skin.constructor !== BitmapSkin) return null;
                 ids.push(id);
                 drawables.push(drawable);
+                skins.push(drawable.skin);
             }
             table.source = candidateIDs.slice();
             table.ids = ids;
             table.drawables = drawables;
+            table.skins = skins;
             table.rects = new Array(ids.length).fill(null);
         }
         const result = [];
         // Like _candidatesTouching: nothing to do (and nothing prepared) when the asker has no bounds.
         if (bounds === null) return result;
-        const {ids, drawables, rects} = table;
+        const {ids, drawables, skins, rects} = table;
         for (let i = 0; i < ids.length; i++) {
             const id = ids[i];
             const drawable = drawables[i];
+            if (drawable._skin !== skins[i]) {
+                // The skin was swapped without the skin setter (some extensions do): do the full check.
+                table.source = null;
+                table.epoch = -1;
+                return null;
+            }
             if (id === drawableID || !drawable._visible) continue;
             if (!this.allowPrivateSkinAccess && drawable.skin.private) continue;
             let candidateBounds = rects[i];
