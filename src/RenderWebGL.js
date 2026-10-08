@@ -22,9 +22,11 @@ const log = require('./util/log');
 const __isTouchingDrawablesPoint = twgl.v3.create();
 
 /**
- * Drawable methods whose behaviour the touching cache relies on. Some extensions (e.g. SharkPool Camera,
- * SharkPool Looks Expanded) replace them to move or reshape sprites behind the renderer's back; then the
- * cache is not used (see _touchingCacheUsable). These are the originals.
+ * Drawable methods whose behaviour the touching cache relies on. Some extensions (e.g. SharkPool Looks Expanded)
+ * replace them to reshape sprites behind the renderer's back; then the cache is not used (see _touchingCacheUsable).
+ * These are the originals. updatePosition, updateDirection, updateScale and updateVisible are not listed:
+ * replacements of those (e.g. SharkPool Camera) still change touching data only through the matrix (cleared in
+ * _calculateTransform) or the visibility (checked at every query).
  * @type {object.<string, Function>}
  */
 const touchingCacheOriginals = {
@@ -38,11 +40,7 @@ const touchingCacheOriginals = {
     setTransformDirty: Drawable.prototype.setTransformDirty,
     setConvexHullDirty: Drawable.prototype.setConvexHullDirty,
     setConvexHullPoints: Drawable.prototype.setConvexHullPoints,
-    updatePosition: Drawable.prototype.updatePosition,
-    updateDirection: Drawable.prototype.updateDirection,
-    updateScale: Drawable.prototype.updateScale,
     updateTransform: Drawable.prototype.updateTransform,
-    updateVisible: Drawable.prototype.updateVisible,
     updateEffect: Drawable.prototype.updateEffect,
     updateProperties: Drawable.prototype.updateProperties,
     _skinWasAltered: Drawable.prototype._skinWasAltered,
@@ -2157,11 +2155,7 @@ class RenderWebGL extends EventEmitter {
             proto.setTransformDirty !== o.setTransformDirty ||
             proto.setConvexHullDirty !== o.setConvexHullDirty ||
             proto.setConvexHullPoints !== o.setConvexHullPoints ||
-            proto.updatePosition !== o.updatePosition ||
-            proto.updateDirection !== o.updateDirection ||
-            proto.updateScale !== o.updateScale ||
             proto.updateTransform !== o.updateTransform ||
-            proto.updateVisible !== o.updateVisible ||
             proto.updateEffect !== o.updateEffect ||
             proto.updateProperties !== o.updateProperties ||
             proto._skinWasAltered !== o._skinWasAltered ||

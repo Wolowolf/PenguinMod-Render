@@ -133,6 +133,8 @@ class Drawable {
         this._touchingCacheBounds = new Rectangle();
         this._touchingCacheSilhouette = null;
         this._touchingCacheSilhouetteCount = -1;
+        // Goes up whenever this Drawable's touching data changes (extensions can compare it to notice changes).
+        this._touchingVersion = 0;
 
         this._skinWasAltered = this._skinWasAltered.bind(this);
 
@@ -176,6 +178,7 @@ class Drawable {
      */
     _clearTouchingCache () {
         this._touchingCacheEpoch = -1;
+        this._touchingVersion++;
         this._renderer._touchingChanges++;
     }
 
@@ -543,6 +546,8 @@ class Drawable {
         // modelMatrix[15] = 1;
 
         this._transformDirty = false;
+        // The matrix changed (some extensions call this directly, without setTransformDirty).
+        this._clearTouchingCache();
     }
 
     /**
