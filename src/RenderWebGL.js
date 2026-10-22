@@ -24,9 +24,8 @@ const __isTouchingDrawablesPoint = twgl.v3.create();
 /**
  * Drawable methods whose behaviour the touching cache relies on. Some extensions (e.g. SharkPool Looks Expanded)
  * replace them to reshape sprites behind the renderer's back; then the cache is not used (see _touchingCacheUsable).
- * These are the originals. updatePosition, updateDirection, updateScale and updateVisible are not listed:
- * replacements of those (e.g. SharkPool Camera) still change touching data only through the matrix (cleared in
- * _calculateTransform) or the visibility (checked at every query).
+ * These are the originals. (Desktop fork, section 111: updatePosition, updateDirection, updateScale and updateVisible
+ * are listed again; section 42 had left them out for SharkPool Camera, removed in section 49.)
  * @type {object.<string, Function>}
  */
 const touchingCacheOriginals = {
@@ -44,7 +43,11 @@ const touchingCacheOriginals = {
     updateEffect: Drawable.prototype.updateEffect,
     updateProperties: Drawable.prototype.updateProperties,
     _skinWasAltered: Drawable.prototype._skinWasAltered,
-    setHighQuality: Drawable.prototype.setHighQuality
+    setHighQuality: Drawable.prototype.setHighQuality,
+    updatePosition: Drawable.prototype.updatePosition,
+    updateDirection: Drawable.prototype.updateDirection,
+    updateScale: Drawable.prototype.updateScale,
+    updateVisible: Drawable.prototype.updateVisible
 };
 const __candidatesBounds = new Rectangle();
 const __fenceBounds = new Rectangle();
@@ -2159,7 +2162,11 @@ class RenderWebGL extends EventEmitter {
             proto.updateEffect !== o.updateEffect ||
             proto.updateProperties !== o.updateProperties ||
             proto._skinWasAltered !== o._skinWasAltered ||
-            proto.setHighQuality !== o.setHighQuality
+            proto.setHighQuality !== o.setHighQuality ||
+            proto.updatePosition !== o.updatePosition ||
+            proto.updateDirection !== o.updateDirection ||
+            proto.updateScale !== o.updateScale ||
+            proto.updateVisible !== o.updateVisible
         ) {
             return false;
         }

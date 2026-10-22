@@ -34,7 +34,10 @@ class ShaderManager {
         const cache = this._shaderCache[drawMode];
         if (drawMode === ShaderManager.DRAW_MODE.silhouette) {
             // Silhouette mode isn't affected by these effects.
-            effectBits &= ~(ShaderManager.EFFECT_INFO.color.mask | ShaderManager.EFFECT_INFO.brightness.mask);
+            // Desktop fork: neither by saturation and tint (they only change color; with them the
+            // silhouette shader did not compile, and "touching color" threw on uniformSetters of null)
+            effectBits &= ~(ShaderManager.EFFECT_INFO.color.mask | ShaderManager.EFFECT_INFO.brightness.mask |
+                ShaderManager.EFFECT_INFO.saturation.mask | ShaderManager.EFFECT_INFO.tintColor.mask);
         }
         let shader = cache[effectBits];
         if (!shader) {
