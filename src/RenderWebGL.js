@@ -18,37 +18,10 @@ const TextCostumeSkin = require('./TextCostumeSkin');
 const EffectTransform = require('./EffectTransform');
 const CanvasMeasurementProvider = require('./util/canvas-measurement-provider');
 const log = require('./util/log');
+const DrawModes = require('./DrawModes');
 
 const __isTouchingDrawablesPoint = twgl.v3.create();
 
-/**
- * Drawable methods whose behaviour the touching cache relies on. Some extensions (e.g. SharkPool Looks Expanded)
- * replace them to reshape sprites behind the renderer's back; then the cache is not used (see _touchingCacheUsable).
- * These are the originals. (Desktop fork, section 111: updatePosition, updateDirection, updateScale and updateVisible
- * are listed again; section 42 had left them out for SharkPool Camera, removed in section 49.)
- * @type {object.<string, Function>}
- */
-const touchingCacheOriginals = {
-    getFastBounds: Drawable.prototype.getFastBounds,
-    getAABB: Drawable.prototype.getAABB,
-    getBounds: Drawable.prototype.getBounds,
-    _getTransformedHullPoints: Drawable.prototype._getTransformedHullPoints,
-    updateCPURenderAttributes: Drawable.prototype.updateCPURenderAttributes,
-    updateMatrix: Drawable.prototype.updateMatrix,
-    _calculateTransform: Drawable.prototype._calculateTransform,
-    setTransformDirty: Drawable.prototype.setTransformDirty,
-    setConvexHullDirty: Drawable.prototype.setConvexHullDirty,
-    setConvexHullPoints: Drawable.prototype.setConvexHullPoints,
-    updateTransform: Drawable.prototype.updateTransform,
-    updateEffect: Drawable.prototype.updateEffect,
-    updateProperties: Drawable.prototype.updateProperties,
-    _skinWasAltered: Drawable.prototype._skinWasAltered,
-    setHighQuality: Drawable.prototype.setHighQuality,
-    updatePosition: Drawable.prototype.updatePosition,
-    updateDirection: Drawable.prototype.updateDirection,
-    updateScale: Drawable.prototype.updateScale,
-    updateVisible: Drawable.prototype.updateVisible
-};
 const __candidatesBounds = new Rectangle();
 const __fenceBounds = new Rectangle();
 const __touchingColor = new Uint8ClampedArray(4);
@@ -250,6 +223,13 @@ class RenderWebGL extends EventEmitter {
         /** @type {int} */
         this._nextSkinId = RenderConstants.ID_NONE + 1;
 
+        // Desktop fork (section 120): hooks for extensions instead of replacing renderer functions. Plain arrays,
+        // nothing is called when they are empty.
+        /** @type {Array<Function>} called by draw() before a frame is drawn */
+        this.pmBeforeDrawHooks = [];
+        /** @type {Array<Function>} (penSkinID) called by penClear() before the pen layer is cleared */
+        this.pmPenClearHooks = [];
+
         /** @type {module:twgl/m4.Mat4} */
         this._projection = twgl.m4.identity();
 
@@ -446,6 +426,7 @@ class RenderWebGL extends EventEmitter {
                 drawable.setHighQuality(this.useHighQualityRender);
             }
         }
+        this.emit(RenderConstants.Events.RenderQualityUpdated);
     }
 
     /**
@@ -830,6 +811,53 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
+     * Desktop fork (section 120): create an extension's own skin and register it.
+     * @param {Function} SkinClass - a Skin class; it is called as new SkinClass(id, ...args).
+     * @param {...*} args - the constructor's other arguments.
+     * @returns {Skin} the new skin; its ID is skin.id.
+     */
+    createCustomSkin (SkinClass, ...args) {
+        const skinId = this._nextSkinId++;
+        const skin = new SkinClass(skinId, ...args);
+        this._allSkins[skinId] = skin;
+        return skin;
+    }
+
+    /**
+     * Desktop fork (section 120): set a Drawable's clip box (stage coordinates; null: none). Used when the stage is
+     * drawn and when it is stamped.
+     * @param {int} drawableID - the Drawable's ID.
+     * @param {?{x_min: number, y_min: number, x_max: number, y_max: number}} clipbox - the clip box.
+     */
+    updateDrawableClipBox (drawableID, clipbox) {
+        const drawable = this._allDrawables[drawableID];
+        if (!drawable) return;
+        drawable.updateClipBox(clipbox);
+    }
+
+    /**
+     * Desktop fork (section 120): set a Drawable's blend mode (a name in DrawModes; null or "default": normal).
+     * @param {int} drawableID - the Drawable's ID.
+     * @param {?string} blendMode - the blend mode.
+     */
+    updateDrawableBlendMode (drawableID, blendMode) {
+        const drawable = this._allDrawables[drawableID];
+        if (!drawable) return;
+        drawable.updateBlendMode(blendMode);
+    }
+
+    /**
+     * Desktop fork (section 120): the clip box and blend mode for the next pen lines and dots.
+     * @param {int} penSkinID - the unique ID of a Pen Skin.
+     * @param {?object} clipbox - as in updateDrawableClipBox.
+     * @param {?string} blendMode - as in updateDrawableBlendMode.
+     */
+    penDrawModes (penSkinID, clipbox, blendMode) {
+        const skin = /** @type {PenSkin} */ this._allSkins[penSkinID];
+        if (skin) skin.setDrawModes(clipbox, blendMode);
+    }
+
+    /**
      * Create a new Drawable and add it to the scene.
      * @param {string} group Layer group to add the drawable to
      * @returns {int} The ID of the new Drawable.
@@ -1100,6 +1128,8 @@ class RenderWebGL extends EventEmitter {
         if (!this.dirty) {
             return;
         }
+        const beforeDrawHooks = this.pmBeforeDrawHooks;
+        for (let i = 0; i < beforeDrawHooks.length; i++) beforeDrawHooks[i]();
 
         if (this.xrEnabled) {
             // dont crash, just dont draw if we dont have a layer
@@ -1139,7 +1169,10 @@ class RenderWebGL extends EventEmitter {
                 {
                     framebufferWidth: gl.canvas.width,
                     framebufferHeight: gl.canvas.height,
-                    skipPrivateSkins: snapshotRequested
+                    skipPrivateSkins: snapshotRequested,
+                    drawModes: this.xrEnabled ? null : {
+                        toCanvas: true, width: gl.canvas.width, height: gl.canvas.height, flipY: false
+                    }
                 }
             );
         } else {
@@ -2098,7 +2131,6 @@ class RenderWebGL extends EventEmitter {
      * @return {?Array< {id, drawable, intersection} >} Filtered candidates with useful data.
      */
     _candidatesTouching (drawableID, candidateIDs) {
-        const useCache = this._touchingCacheUsable();
         const bounds = this._touchingBounds(drawableID);
         const result = [];
         if (bounds === null) return result;
@@ -2115,15 +2147,7 @@ class RenderWebGL extends EventEmitter {
                     if (!this.allowPrivateSkinAccess && drawable.skin.private) continue;
 
                     // Update the CPU position data and get the bounds, pushed out to integers (cached: see below).
-                    let candidateBounds;
-                    if (useCache) {
-                        candidateBounds = this._getTouchingCandidateBounds(drawable);
-                    } else {
-                        // without the cache, exactly as before section 39
-                        drawable.updateCPURenderAttributes();
-                        candidateBounds = drawable.getFastBounds();
-                        candidateBounds.snapToInt();
-                    }
+                    const candidateBounds = this._getTouchingCandidateBounds(drawable);
 
                     if (bounds.intersects(candidateBounds)) {
                         result.push({
@@ -2138,45 +2162,6 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
-     * Whether the touching cache can be used: no extension has replaced the Drawable methods it relies on, or the
-     * renderer's own touching helpers on this renderer.
-     * @return {boolean} true if the cache can be used.
-     * @private
-     */
-    _touchingCacheUsable () {
-        const proto = Drawable.prototype;
-        const o = touchingCacheOriginals;
-        // written out (not a loop over names): this runs for every touching query
-        if (
-            proto.getFastBounds !== o.getFastBounds ||
-            proto.getAABB !== o.getAABB ||
-            proto.getBounds !== o.getBounds ||
-            proto._getTransformedHullPoints !== o._getTransformedHullPoints ||
-            proto.updateCPURenderAttributes !== o.updateCPURenderAttributes ||
-            proto.updateMatrix !== o.updateMatrix ||
-            proto._calculateTransform !== o._calculateTransform ||
-            proto.setTransformDirty !== o.setTransformDirty ||
-            proto.setConvexHullDirty !== o.setConvexHullDirty ||
-            proto.setConvexHullPoints !== o.setConvexHullPoints ||
-            proto.updateTransform !== o.updateTransform ||
-            proto.updateEffect !== o.updateEffect ||
-            proto.updateProperties !== o.updateProperties ||
-            proto._skinWasAltered !== o._skinWasAltered ||
-            proto.setHighQuality !== o.setHighQuality ||
-            proto.updatePosition !== o.updatePosition ||
-            proto.updateDirection !== o.updateDirection ||
-            proto.updateScale !== o.updateScale ||
-            proto.updateVisible !== o.updateVisible
-        ) {
-            return false;
-        }
-        const own = RenderWebGL.prototype;
-        return this._candidatesTouching === own._candidatesTouching &&
-            this._touchingBounds === own._touchingBounds &&
-            this._getTouchingCandidateBounds === own._getTouchingCandidateBounds;
-    }
-
-    /**
      * Touching table: when the same list of candidates (same array, same contents, 8 or more) is asked about again
      * and nothing that could change the answer happened in between (no Drawable changed, no drawable created,
      * removed or reordered, no silhouette updated, same frame), the drawables of the list and their cached bounds
@@ -2188,7 +2173,7 @@ class RenderWebGL extends EventEmitter {
      * @private
      */
     _cachedCandidatesTouching (drawableID, candidateIDs) {
-        if (candidateIDs.length < 8 || !this._touchingCacheUsable()) return null;
+        if (candidateIDs.length < 8) return null;
         let table = this._touchingTables.get(candidateIDs);
         if (!table) {
             table = {epoch: -1, changes: -1, silhouettes: -1, source: null, ids: null, drawables: null, rects: null};
@@ -2478,6 +2463,8 @@ class RenderWebGL extends EventEmitter {
      * @param {int} penSkinID - the unique ID of a Pen Skin.
      */
     penClear (penSkinID) {
+        const penClearHooks = this.pmPenClearHooks;
+        for (let i = 0; i < penClearHooks.length; i++) penClearHooks[i](penSkinID);
         this.dirty = true;
         const skin = /** @type {PenSkin} */ this._allSkins[penSkinID];
         skin.clear();
@@ -2557,7 +2544,10 @@ class RenderWebGL extends EventEmitter {
         this._drawThese([stampID], ShaderManager.DRAW_MODE.default, projection, {
             ignoreVisibility: true,
             framebufferWidth: this._nativeSize[0] * quality,
-            framebufferHeight: this._nativeSize[1] * quality
+            framebufferHeight: this._nativeSize[1] * quality,
+            drawModes: {
+                toCanvas: false, width: skin._framebuffer.width, height: skin._framebuffer.height, flipY: true
+            }
         });
         skin._silhouetteDirty = true;
     }
@@ -2682,6 +2672,10 @@ class RenderWebGL extends EventEmitter {
             opts.framebufferWidth !== this._nativeSize[0] &&
             opts.framebufferHeight !== this._nativeSize[1];
 
+        // Desktop fork (section 120): clip boxes and blend modes, only when drawing the stage or stamping
+        const drawModes = opts.drawModes || null;
+        let drawModesSet = false;
+
         const numDrawables = drawables.length;
         for (let drawableIndex = 0; drawableIndex < numDrawables; ++drawableIndex) {
             const drawableID = drawables[drawableIndex];
@@ -2770,9 +2764,14 @@ class RenderWebGL extends EventEmitter {
                 });
             }
 
+            if (drawModes !== null && (drawModesSet || drawable.clipbox !== null || drawable.blendMode !== null)) {
+                drawModesSet = DrawModes.apply(gl, drawable.clipbox, drawable.blendMode, drawModes, this._nativeSize);
+            }
+
             twgl.setUniforms(currentShader, uniforms);
             twgl.drawBufferInfo(gl, this._bufferInfo, gl.TRIANGLES);
         }
+        if (drawModesSet) DrawModes.reset(gl);
 
         this._regionId = null;
     }

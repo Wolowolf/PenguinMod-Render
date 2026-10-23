@@ -5,6 +5,7 @@ const RenderConstants = require('./RenderConstants');
 const ShaderManager = require('./ShaderManager');
 const EffectTransform = require('./EffectTransform');
 const log = require('./util/log');
+const DrawModes = require('./DrawModes');
 
 /**
  * An internal workspace for calculating texture locations from world vectors
@@ -94,6 +95,12 @@ class Drawable {
             const converter = effectInfo.converter;
             this._uniforms[effectInfo.uniformName] = converter(0);
         }
+
+        // Desktop fork (section 120): clip box and blend mode (DrawModes.js), null when not used
+        /** @type {?{x_min: number, y_min: number, x_max: number, y_max: number}} */
+        this.clipbox = null;
+        /** @type {?string} */
+        this.blendMode = null;
 
         this._position = twgl.v3.create(0, 0);
         this._scale = twgl.v3.create(100, 100);
@@ -306,6 +313,48 @@ class Drawable {
             this._renderer.dirty = true;
             this.setConvexHullDirty();
         }
+    }
+
+    /**
+     * Desktop fork (section 120): set the clip box used when the stage is drawn or this Drawable is stamped.
+     * @param {?object} clipbox - {x_min, y_min, x_max, y_max} in stage coordinates, or null for none.
+     */
+    updateClipBox (clipbox) {
+        this.clipbox = DrawModes.copyClipBox(clipbox);
+        this._renderer.dirty = true;
+    }
+
+    /**
+     * Desktop fork (section 120): set the blend mode used when the stage is drawn or this Drawable is stamped.
+     * @param {?string} blendMode - a name in DrawModes.js; null or "default" for normal blending.
+     */
+    updateBlendMode (blendMode) {
+        this.blendMode = blendMode && blendMode !== 'default' ? String(blendMode) : null;
+        this._renderer.dirty = true;
+    }
+
+    /**
+     * Desktop fork (section 120): set effects from uniform values (as in another Drawable's _uniforms, e.g. saved by
+     * an extension), with the same bookkeeping as updateEffect. Uniforms that are not effects are ignored.
+     * @param {object.<string, *>} uniforms - uniform name → value.
+     */
+    setEffectUniforms (uniforms) {
+        this._renderer.dirty = true;
+        let shapeChanged = false;
+        const numEffects = ShaderManager.EFFECTS.length;
+        for (let index = 0; index < numEffects; ++index) {
+            const effectInfo = ShaderManager.EFFECT_INFO[ShaderManager.EFFECTS[index]];
+            if (!Object.prototype.hasOwnProperty.call(uniforms, effectInfo.uniformName)) continue;
+            const value = uniforms[effectInfo.uniformName];
+            if (value === effectInfo.converter(0)) {
+                this.enabledEffects &= ~effectInfo.mask;
+            } else {
+                this.enabledEffects |= effectInfo.mask;
+            }
+            this._uniforms[effectInfo.uniformName] = value;
+            if (effectInfo.shapeChanges) shapeChanged = true;
+        }
+        if (shapeChanged) this.setConvexHullDirty();
     }
 
     /**

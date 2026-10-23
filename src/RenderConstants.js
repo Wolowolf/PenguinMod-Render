@@ -32,6 +32,11 @@ module.exports = {
          * @type {object}
          * @property {Array<int>} newSize - the new size of the renderer
          */
-        NativeSizeChanged: 'NativeSizeChanged'
+        NativeSizeChanged: 'NativeSizeChanged',
+
+        /**
+         * Desktop fork (section 120): emitted after the render quality was updated (stage resized, quality changed).
+         */
+        RenderQualityUpdated: 'RenderQualityUpdated'
     }
 };

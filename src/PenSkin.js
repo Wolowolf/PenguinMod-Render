@@ -2,6 +2,7 @@ const twgl = require('twgl.js');
 
 const RenderConstants = require('./RenderConstants');
 const Skin = require('./Skin');
+const DrawModes = require('./DrawModes');
 
 const ShaderManager = require('./ShaderManager');
 
@@ -47,6 +48,12 @@ class PenSkin extends Skin {
 
         /** @type {boolean} */
         this._silhouetteDirty = false;
+
+        // Desktop fork (section 120): clip box and blend mode of the next pen lines (DrawModes.js), null when not used
+        /** @type {?object} */
+        this._drawClipbox = null;
+        /** @type {?string} */
+        this._drawBlendMode = null;
 
         /** @type {Uint8Array} */
         this._silhouettePixels = null;
@@ -403,9 +410,33 @@ class PenSkin extends Skin {
         }
     }
 
+    /**
+     * Desktop fork (section 120): set the clip box and blend mode of the next pen lines and dots. Lines waiting to be
+     * drawn are drawn first with the previous ones.
+     * @param {?object} clipbox - {x_min, y_min, x_max, y_max} in stage coordinates, or null for none.
+     * @param {?string} blendMode - a name in DrawModes.js; null or "default" for normal blending.
+     */
+    setDrawModes (clipbox, blendMode) {
+        if (!blendMode || blendMode === 'default') blendMode = null;
+        const old = this._drawClipbox;
+        if (blendMode === this._drawBlendMode && (clipbox ?
+            old !== null && old.x_min === clipbox.x_min && old.y_min === clipbox.y_min &&
+                old.x_max === clipbox.x_max && old.y_max === clipbox.y_max :
+            old === null)) return;
+        if (this.attribute_index) this._flushLines();
+        this._drawClipbox = DrawModes.copyClipBox(clipbox);
+        this._drawBlendMode = blendMode === null ? null : String(blendMode);
+    }
+
     _flushLines () {
         /** @type {WebGLRenderingContext} */
         const gl = this._renderer.gl;
+
+        const drawModesSet = (this._drawClipbox !== null || this._drawBlendMode !== null) && DrawModes.apply(
+            gl, this._drawClipbox, this._drawBlendMode,
+            {toCanvas: false, width: this._framebuffer.width, height: this._framebuffer.height, flipY: true},
+            this._renderer._nativeSize
+        );
 
         gl.bindBuffer(gl.ARRAY_BUFFER, this.attribute_glbuffer);
         gl.bufferSubData(gl.ARRAY_BUFFER, 0, new Float32Array(this.attribute_data.buffer, 0, this.attribute_index));
@@ -447,6 +478,8 @@ class PenSkin extends Skin {
         } else {
             gl.drawArrays(gl.TRIANGLES, 0, this.attribute_index / PEN_ATTRIBUTE_STRIDE);
         }
+
+        if (drawModesSet) DrawModes.reset(gl);
 
         this.attribute_index = 0;
         this._silhouetteDirty = true;
