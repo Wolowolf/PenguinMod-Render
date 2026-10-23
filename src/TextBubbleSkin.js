@@ -12,7 +12,7 @@ const BubbleStyle = {
     CORNER_RADIUS: 16, // Radius of the rounded corners
     TAIL_HEIGHT: 12, // Height of the speech bubble's "tail". Probably should be a constant.
 
-    FONT: 'Helvetica', // Font to render the text with
+    FONT: 'Atkinson Hyperlegible Next', // Font to render the text with
     FONT_SIZE: 14, // Font size, in Scratch pixels
     FONT_HEIGHT_RATIO: 0.9, // Height, in Scratch pixels, of the text, as a proportion of the font's size
     LINE_HEIGHT: 16, // Spacing between each line of text
