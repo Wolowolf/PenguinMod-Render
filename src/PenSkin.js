@@ -492,9 +492,14 @@ class PenSkin extends Skin {
     onNativeSizeChanged (event) {
         // tw: keep track of native size
         this._nativeSize = event.newSize;
+        // PMDESKTOP_PEN_QUALITY (section 145): the high quality pen's quality for the new size (canvas pixels per
+        // stage unit, as _updateRenderQuality gives it later); the old size's made a huge layer after a tiny stage
+        if (this._renderer.useHighQualityRender && event.newSize[0] > 0) {
+            this.renderQuality = this._renderer.canvas.width / event.newSize[0];
+        }
         this._setCanvasSize([
-            event.newSize[0] * this.renderQuality,
-            event.newSize[1] * this.renderQuality
+            Math.round(event.newSize[0] * this.renderQuality),
+            Math.round(event.newSize[1] * this.renderQuality)
         ]);
         this.emitWasAltered();
     }
