@@ -5,6 +5,8 @@ const { loadSvgString, serializeSvgToString } = require("scratch-svg-renderer");
 const ShaderManager = require("./ShaderManager");
 const log = require("./util/log");
 
+const __noTransform = [0, 0];
+
 /**
  * All scaled renderings of the SVG are stored in an array. The 1.0 scale of
  * the SVG is stored at the 8th index. The smallest possible 1 / 256 scale
@@ -185,9 +187,8 @@ class SVGSkin extends Skin {
    */
   getTexture(scale, transform) {
     // sometimes transform has undefined passed into it
-    if (!transform) transform = [0, 0];
-    if (typeof transform[0] !== "number") transform = [0, 0];
-    if (typeof transform[1] !== "number") transform = [0, 0];
+    // Desktop fork (section 169): one shared array, only read; this runs per clone per frame
+    if (!transform || typeof transform[0] !== "number" || typeof transform[1] !== "number") transform = __noTransform;
 
     // The texture only ever gets uniform scale. Take the larger of the two axes.
     const scaleMax = scale

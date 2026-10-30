@@ -15,6 +15,9 @@ const DrawModes = require('./DrawModes');
 const __isTouchingPosition = twgl.v3.create();
 const FLOATING_POINT_ERROR_ALLOWANCE = 1e-6;
 
+const __hullProjection = twgl.m4.ortho(-1, 1, -1, 1, -1, 1);
+const __hullMatrix = twgl.m4.identity();
+
 /**
  * Convert a scratch space location into a texture space float.  Uses the
  * internal __isTouchingPosition as a return value, so this should be copied
@@ -751,11 +754,11 @@ class Drawable {
             return this._transformedHullPoints;
         }
 
-        const projection = twgl.m4.ortho(-1, 1, -1, 1, -1, 1);
         const skinSize = this.skin.size;
         const halfXPixel = 1 / skinSize[0] / 2;
         const halfYPixel = 1 / skinSize[1] / 2;
-        const tm = twgl.m4.multiply(this._uniforms.u_modelMatrix, projection);
+        // Desktop fork (section 169): both matrices reused, not made for every clone every frame
+        const tm = twgl.m4.multiply(this._uniforms.u_modelMatrix, __hullProjection, __hullMatrix);
         for (let i = 0; i < this._convexHullPoints.length; i++) {
             const point = this._convexHullPoints[i];
             const dstPoint = this._transformedHullPoints[i];

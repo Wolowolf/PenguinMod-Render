@@ -27,6 +27,7 @@ const __isTouchingDrawablesPoint = twgl.v3.create();
 
 const __candidatesBounds = new Rectangle();
 const __fenceBounds = new Rectangle();
+const __noTransform = [0, 0];
 const __touchingColor = new Uint8ClampedArray(4);
 const __blendColor = new Uint8ClampedArray(4);
 
@@ -2544,7 +2545,7 @@ class RenderWebGL extends EventEmitter {
      * @param {Array.<number, number>} position to be fenced - An array of type [x, y]
      * @return {Array.<number, number>} The fenced position as an array [x, y]
      */
-    getFencedPositionOfDrawable (drawableID, position) {
+    getFencedPositionOfDrawable (drawableID, position, result) {
         let x = position[0];
         let y = position[1];
 
@@ -2552,7 +2553,10 @@ class RenderWebGL extends EventEmitter {
         if (!drawable) {
             // @todo(https://github.com/LLK/scratch-vm/issues/2288) fix whatever's wrong in the VM which causes this, then add a warning or throw here.
             // Right now this happens so much on some projects that a warning or exception here can hang the browser.
-            return [x, y];
+            result = result || [];
+            result[0] = x;
+            result[1] = y;
+            return result;
         }
 
         const dx = x - drawable._position[0];
@@ -2566,7 +2570,11 @@ class RenderWebGL extends EventEmitter {
         const sy = this._yTop - Math.min(FENCE_WIDTH, inset);
         if (aabb.top + dy < -sy) y = Math.ceil(drawable._position[1] - (sy + aabb.top));
         else if (aabb.bottom + dy > sy) y = Math.floor(drawable._position[1] + (sy - aabb.bottom));
-        return [x, y];
+        // Desktop fork (section 169): an optional array to write into, so a move makes no garbage
+        result = result || [];
+        result[0] = x;
+        result[1] = y;
+        return result;
     }
 
     /**
@@ -2900,8 +2908,8 @@ class RenderWebGL extends EventEmitter {
                     (drawable.scale[0] * opts.framebufferWidth) / this._nativeSize[0],
                     (drawable.scale[1] * opts.framebufferHeight) / this._nativeSize[1]
                 ]
-                : drawable.scale;
-            const drawableTransform = drawable.transform || [0, 0];
+                : drawable._scale; // Desktop fork (section 169): only read here; the getter makes a new array
+            const drawableTransform = drawable.transform || __noTransform;
 
             // If the skin or texture isn't ready yet, skip it.
             if (
