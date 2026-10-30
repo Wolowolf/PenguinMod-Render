@@ -18,7 +18,13 @@ const float epsilon = 1e-3;
 
 #if !(defined(DRAW_MODE_line) || defined(DRAW_MODE_background))
 uniform mat4 u_projectionMatrix;
+#ifdef DRAW_MODE_batched
+attribute vec2 a_m0;
+attribute vec2 a_m1;
+attribute vec2 a_m2;
+#else
 uniform mat4 u_modelMatrix;
+#endif
 attribute vec2 a_texCoord;
 #ifdef ENABLE_horizontal_shear
 uniform float u_horizontalShear;
@@ -106,7 +112,11 @@ void main() {
 	if (a_position.x < 0.0)
 		y += u_verticalShear;
 	#endif
+	#ifdef DRAW_MODE_batched
+	gl_Position = u_projectionMatrix * mat4(a_m0, 0, 0, a_m1, 0, 0, 0, 0, 1, 0, a_m2, 0, 1) * vec4(x,y, 0, 1);
+	#else
 	gl_Position = u_projectionMatrix * u_modelMatrix * vec4(x,y, 0, 1);
+	#endif
 	v_texCoord = a_texCoord;
 	#endif
 }

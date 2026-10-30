@@ -20,6 +20,9 @@ const CanvasMeasurementProvider = require('./util/canvas-measurement-provider');
 const log = require('./util/log');
 const DrawModes = require('./DrawModes');
 
+// Desktop fork (section 163): shorter runs are drawn one by one, since an instanced call has its own setup
+const BATCH_MIN = 4;
+
 const __isTouchingDrawablesPoint = twgl.v3.create();
 
 const __candidatesBounds = new Rectangle();
@@ -238,6 +241,9 @@ class RenderWebGL extends EventEmitter {
 
         /** @type {any} */
         this._regionId = null;
+
+        // Desktop fork (section 163): what the stage draw collects for an instanced call
+        this._pmBatch = {data: new Float32Array(6 * 1024), drawables: [], scales: [], buffer: null};
 
         /** @type {function} */
         this._exitRegion = null;
@@ -2676,64 +2682,17 @@ class RenderWebGL extends EventEmitter {
         const drawModes = opts.drawModes || null;
         let drawModesSet = false;
 
-        const numDrawables = drawables.length;
-        for (let drawableIndex = 0; drawableIndex < numDrawables; ++drawableIndex) {
-            const drawableID = drawables[drawableIndex];
+        // Desktop fork (section 163): runs of neighbouring drawables with the same texture and no effects are drawn
+        // with one instanced call, only when drawing the stage. The order stays the same, so the picture does too.
+        const batching = drawMode === ShaderManager.DRAW_MODE.default && drawModes !== null && drawModes.toCanvas === true &&
+            !opts.extraUniforms && !this.pmNoBatchedDraw && typeof gl.drawArraysInstanced === 'function';
+        const batch = this._pmBatch;
+        let batchCount = 0;
+        let batchTexture = null;
+        let batchNearest = false;
 
-            // If we have a filter, check whether the ID fails
-            if (opts.filter && !opts.filter(drawableID)) continue;
-
-            const drawable = this._allDrawables[drawableID];
-            if (!drawable) continue;
-
+        const drawOne = (drawable, drawableScale, effectBits) => {
             const uniforms = {};
-            if (!this.renderOffscreen && drawable.uniformApplied) {
-                if (drawMode === ShaderManager.DRAW_MODE.default && drawable.skin) {
-                    // If rotationCenterDirty or skinScaleDirty is dirty, then set _calculateTransform first
-                    // because _rotationAdjusted and _skinScale    needs to call _calculateTransform before using
-                    let uniformHasBeenSet = false;
-                    if (drawable.transformBeforeCheckViewport()) {
-                        Object.assign(uniforms, drawable.getUniforms());
-                        uniformHasBeenSet = true;
-                    }
-
-                    if (!drawable.inViewport(halfNativeSizeX, halfNativeSizeY)) continue;
-                    // If unconfirm was not set before
-                    if (!uniformHasBeenSet) Object.assign(uniforms, drawable.getUniforms());
-                } else {
-                    Object.assign(uniforms, drawable.getUniforms());
-                }
-            }
-
-            // Hidden drawables (e.g., by a "hide" block) are not drawn unless
-            // the ignoreVisibility flag is used (e.g. for stamping or touchingColor).
-            if (!drawable.getVisible() && !opts.ignoreVisibility) continue;
-
-            // drawableScale is the "framebuffer-pixel-space" scale of the drawable, as percentages of the drawable's
-            // "native size" (so 100 = same as skin's "native size", 200 = twice "native size").
-            // If the framebuffer dimensions are the same as the stage's "native" size, there's no need to calculate it.
-            const drawableScale = framebufferSpaceScaleDiffers
-                ? [
-                    (drawable.scale[0] * opts.framebufferWidth) / this._nativeSize[0],
-                    (drawable.scale[1] * opts.framebufferHeight) / this._nativeSize[1]
-                ]
-                : drawable.scale;
-            const drawableTransform = drawable.transform || [0, 0];
-
-            // If the skin or texture isn't ready yet, skip it.
-            if (
-                !drawable.skin ||
-                !drawable.skin.getTexture(drawableScale, drawableTransform)
-            ) {
-                continue;
-            }
-
-            // Skip private skins, if requested.
-            if (opts.skipPrivateSkins && drawable.skin.private) continue;
-
-            let effectBits = drawable.enabledEffects;
-            effectBits &= Object.prototype.hasOwnProperty.call(opts, 'effectMask')
-                ? opts.effectMask : effectBits;
             const newShader = this._shaderManager.getShader(drawMode, effectBits);
 
             // Manually perform region check. Do not create functions inside a
@@ -2770,10 +2729,152 @@ class RenderWebGL extends EventEmitter {
 
             twgl.setUniforms(currentShader, uniforms);
             twgl.drawBufferInfo(gl, this._bufferInfo, gl.TRIANGLES);
+        };
+
+        const flushBatch = () => {
+            const count = batchCount;
+            batchCount = 0;
+            if (count < BATCH_MIN) {
+                for (let i = 0; i < count; i++) drawOne(batch.drawables[i], batch.scales[i], 0);
+                return;
+            }
+            currentShader = this._drawBatch(count, batchTexture, batchNearest, projection);
+        };
+
+        const numDrawables = drawables.length;
+        for (let drawableIndex = 0; drawableIndex < numDrawables; ++drawableIndex) {
+            const drawableID = drawables[drawableIndex];
+
+            // If we have a filter, check whether the ID fails
+            if (opts.filter && !opts.filter(drawableID)) continue;
+
+            const drawable = this._allDrawables[drawableID];
+            if (!drawable) continue;
+
+            if (!this.renderOffscreen && drawable.uniformApplied) {
+                if (drawMode === ShaderManager.DRAW_MODE.default && drawable.skin) {
+                    // If rotationCenterDirty or skinScaleDirty is dirty, then set _calculateTransform first
+                    // because _rotationAdjusted and _skinScale    needs to call _calculateTransform before using
+                    let uniformHasBeenSet = false;
+                    if (drawable.transformBeforeCheckViewport()) {
+                        drawable.getUniforms();
+                        uniformHasBeenSet = true;
+                    }
+
+                    if (!drawable.inViewport(halfNativeSizeX, halfNativeSizeY)) continue;
+                    // If unconfirm was not set before
+                    if (!uniformHasBeenSet) drawable.getUniforms();
+                } else {
+                    drawable.getUniforms();
+                }
+            }
+
+            // Hidden drawables (e.g., by a "hide" block) are not drawn unless
+            // the ignoreVisibility flag is used (e.g. for stamping or touchingColor).
+            if (!drawable.getVisible() && !opts.ignoreVisibility) continue;
+
+            // drawableScale is the "framebuffer-pixel-space" scale of the drawable, as percentages of the drawable's
+            // "native size" (so 100 = same as skin's "native size", 200 = twice "native size").
+            // If the framebuffer dimensions are the same as the stage's "native" size, there's no need to calculate it.
+            const drawableScale = framebufferSpaceScaleDiffers
+                ? [
+                    (drawable.scale[0] * opts.framebufferWidth) / this._nativeSize[0],
+                    (drawable.scale[1] * opts.framebufferHeight) / this._nativeSize[1]
+                ]
+                : drawable.scale;
+            const drawableTransform = drawable.transform || [0, 0];
+
+            // If the skin or texture isn't ready yet, skip it.
+            if (
+                !drawable.skin ||
+                !drawable.skin.getTexture(drawableScale, drawableTransform)
+            ) {
+                continue;
+            }
+
+            // Skip private skins, if requested.
+            if (opts.skipPrivateSkins && drawable.skin.private) continue;
+
+            let effectBits = drawable.enabledEffects;
+            effectBits &= Object.prototype.hasOwnProperty.call(opts, 'effectMask')
+                ? opts.effectMask : effectBits;
+            if (batching && effectBits === 0 && !drawModesSet && drawable.clipbox === null && drawable.blendMode === null &&
+                drawable.skin.getUniforms === Skin.prototype.getUniforms) {
+                const texture = drawable.skin.getTexture(drawableScale);
+                const nearest = drawable.skin.useNearest(drawableScale, drawable);
+                if (batchCount > 0 && (texture !== batchTexture || nearest !== batchNearest)) flushBatch();
+                batchTexture = texture;
+                batchNearest = nearest;
+                drawable.uniformApplied = true;
+                const matrix = drawable.getUniforms().u_modelMatrix;
+                if ((batchCount + 1) * 6 > batch.data.length) {
+                    const grown = new Float32Array(batch.data.length * 2);
+                    grown.set(batch.data);
+                    batch.data = grown;
+                }
+                const data = batch.data;
+                const offset = batchCount * 6;
+                data[offset] = matrix[0];
+                data[offset + 1] = matrix[1];
+                data[offset + 2] = matrix[4];
+                data[offset + 3] = matrix[5];
+                data[offset + 4] = matrix[12];
+                data[offset + 5] = matrix[13];
+                batch.drawables[batchCount] = drawable;
+                batch.scales[batchCount] = drawableScale;
+                batchCount++;
+                continue;
+            }
+
+            if (batchCount > 0) flushBatch();
+            drawOne(drawable, drawableScale, effectBits);
         }
+        if (batchCount > 0) flushBatch();
         if (drawModesSet) DrawModes.reset(gl);
 
         this._regionId = null;
+        batch.drawables.length = 0;
+        batch.scales.length = 0;
+    }
+
+    /**
+     * Desktop fork (section 163): draw the first `count` collected drawables with one instanced call.
+     * @param {int} count How many.
+     * @param {WebGLTexture} texture Their texture.
+     * @param {boolean} nearest Whether it is sampled with nearest-neighbour.
+     * @param {module:twgl/m4.Mat4} projection The projection matrix to use.
+     * @return {ProgramInfo} The shader now in use.
+     * @private
+     */
+    _drawBatch (count, texture, nearest, projection) {
+        const gl = this._gl;
+        const batch = this._pmBatch;
+        const shader = this._shaderManager.getShader(ShaderManager.DRAW_MODE.batched, 0);
+        this._doExitDrawRegion();
+        this._regionId = shader;
+        // always, since a skin's getTexture may have used the shared context since the last draw
+        gl.useProgram(shader.program);
+        twgl.setBuffersAndAttributes(gl, shader, this._bufferInfo);
+        twgl.setTextureParameters(gl, texture, {minMag: nearest ? gl.NEAREST : gl.LINEAR});
+        twgl.setUniforms(shader, {u_projectionMatrix: projection, u_skin: texture});
+
+        if (!batch.buffer) batch.buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, batch.buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, batch.data, gl.STREAM_DRAW, 0, count * 6);
+        for (let i = 0; i < 3; i++) {
+            const location = gl.getAttribLocation(shader.program, `a_m${i}`);
+            gl.enableVertexAttribArray(location);
+            gl.vertexAttribPointer(location, 2, gl.FLOAT, false, 24, i * 8);
+            gl.vertexAttribDivisor(location, 1);
+        }
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, this._bufferInfo.numElements, count);
+        // the context is shared with the other shaders and with extensions
+        for (let i = 0; i < 3; i++) {
+            const location = gl.getAttribLocation(shader.program, `a_m${i}`);
+            gl.vertexAttribDivisor(location, 0);
+            gl.disableVertexAttribArray(location);
+        }
+        return shader;
     }
 
     /**

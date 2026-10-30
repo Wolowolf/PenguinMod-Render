@@ -229,6 +229,11 @@ ShaderManager.DRAW_MODE = {
     default: 'default',
 
     /**
+     * Desktop fork: like default, but the model matrix comes per instance from attributes (batched drawing).
+     */
+    batched: 'batched',
+
+    /**
      * Draw with non-premultiplied alpha. Useful for reading pixels from GL into an ImageData object.
      */
     straightAlpha: 'straightAlpha',
