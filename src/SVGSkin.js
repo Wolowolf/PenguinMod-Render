@@ -254,6 +254,39 @@ class SVGSkin extends Skin {
   }
 
   /**
+   * Desktop fork (section 165).
+   * @returns {number} about how many bytes pmFree would give back: the textures, the canvas and the silhouette
+   */
+  pmMemoryBytes() {
+    if (this._pmMake || this.pmLoading || !this._svgImageLoaded) return 0;
+    const area = this._size[0] * this._size[1] * 4;
+    let bytes = 0;
+    this._scaledMIPs.forEach((mip, level) => {
+      bytes += area * Math.pow(4, level - INDEX_OFFSET);
+    });
+    if (!bytes) return 0;
+    return (
+      bytes +
+      this._canvas.width * this._canvas.height * 4 +
+      area * this._largestMIPScale * this._largestMIPScale
+    );
+  }
+
+  /**
+   * Desktop fork (section 165): free the textures, the canvas and the silhouette. The loaded image stays, so they can
+   * be drawn again at once: no moment without a picture, and the silhouette is as sharp as it was.
+   */
+  pmFree() {
+    const largest = this._largestMIPScale * 100;
+    this.resetMIPs();
+    this._pmDropSilhouette();
+    this._canvas.width = this._canvas.height = 0;
+    this._pmDefer(["_svgImageLoaded", "_silhouette"], () => {
+      if (largest) this.getTexture([largest, largest]);
+    });
+  }
+
+  /**
    * Desktop fork (section 164): parse the SVG and load its image when this skin is first needed.
    * @param {Function} getSvg - returns the SVG
    * @param {Array<number>} rotationCenter - rotation center of the SVG

@@ -65,22 +65,21 @@ class BitmapSkin extends Skin {
     this._textureSize = [width, height];
     this._rotationCenter[0] = rotationCenter[0];
     this._rotationCenter[1] = rotationCenter[1];
-    this._pmDefer(
-      ["_texture", "_silhouette"],
-      () => {
-        let image;
-        try {
-          image = decode();
-        } catch (e) {
-          log.warn("Costume could not be decoded", e);
-          super.setEmptyImageData();
-          return;
-        }
-        this.setBitmap(image, costumeResolution, rotationCenter);
-      },
-      source,
-    );
+    const make = () => {
+      let image;
+      try {
+        image = decode();
+      } catch (e) {
+        log.warn("Costume could not be decoded", e);
+        super.setEmptyImageData();
+        return;
+      }
+      this.setBitmap(image, costumeResolution, rotationCenter);
+    };
+    this._pmDefer(["_texture", "_silhouette"], make, source);
     this._pmDeferredArgs = [costumeResolution, rotationCenter];
+    // Desktop fork (section 165): kept until something else sets this skin's image, so it can be freed
+    this._pmRemake = [make, source];
   }
 
   /**
@@ -89,7 +88,26 @@ class BitmapSkin extends Skin {
    */
   setDeferredBitmap(image) {
     if (!this._pmMake) return;
-    this.setBitmap(image, ...this._pmDeferredArgs);
+    this._pmMaking(() => this.setBitmap(image, ...this._pmDeferredArgs));
+  }
+
+  /**
+   * Desktop fork (section 165).
+   * @returns {number} about how many bytes pmFree would give back: the texture and the silhouette's copy
+   */
+  pmMemoryBytes() {
+    if (this._pmMake || !this._pmRemake || !this._texture) return 0;
+    return this._textureSize[0] * this._textureSize[1] * 8;
+  }
+
+  /**
+   * Desktop fork (section 165): back to what deferBitmap left, decoded again when it is needed.
+   */
+  pmFree() {
+    this._renderer.gl.deleteTexture(this._texture);
+    this._texture = null;
+    this._pmDropSilhouette();
+    this._pmDefer(["_texture", "_silhouette"], ...this._pmRemake);
   }
 
   /**
@@ -102,6 +120,7 @@ class BitmapSkin extends Skin {
    */
   setBitmap(bitmapData, costumeResolution, rotationCenter) {
     this._pmCancel();
+    if (!this.pmIsMaking) this._pmRemake = null;
     if (!bitmapData.width || !bitmapData.height) {
       super.setEmptyImageData();
       return;

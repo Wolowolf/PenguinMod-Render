@@ -101,8 +101,47 @@ class Skin {
         const make = this._pmMake;
         if (!make) return;
         this._pmCancel();
-        make();
+        this._pmMaking(make);
     }
+
+    /**
+     * Desktop fork (section 165): remembers that what is being set comes from this skin's own source.
+     * @param {Function} make - sets it
+     * @protected
+     */
+    _pmMaking (make) {
+        this.pmIsMaking = true;
+        try {
+            make();
+        } finally {
+            this.pmIsMaking = false;
+        }
+        this.pmLastUsed = this._renderer.pmClock;
+    }
+
+    /**
+     * Desktop fork (section 165): let go of the silhouette and the image or canvas it was going to read.
+     * @protected
+     */
+    _pmDropSilhouette () {
+        const image = this._silhouette._lazyData;
+        if (image && image.close) image.close();
+        else if (image && image.getContext) image.width = image.height = 0;
+        this._silhouette = new Silhouette();
+    }
+
+    /**
+     * Desktop fork (section 165).
+     * @returns {number} about how many bytes pmFree would give back; 0 when this skin can't be freed
+     */
+    pmMemoryBytes () {
+        return 0;
+    }
+
+    /**
+     * Desktop fork (section 165): free what can be made again; any read of it makes it again (_pmDefer).
+     */
+    pmFree () {}
 
     /**
      * Dispose of this object. Do not use it after calling this method.

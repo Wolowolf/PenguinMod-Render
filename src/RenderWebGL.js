@@ -739,6 +739,46 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
+     * Desktop fork (section 165): the skins that could be freed. Skins that drawables show count as used just now.
+     * @param {number} now - the time, as later given in pmLastUsed
+     * @returns {Array.<{skinId: int, bytes: number, lastUsed: number}>} those skins
+     */
+    pmFreeableSkins (now) {
+        this.pmClock = now;
+        for (const drawable of this._allDrawables) {
+            if (drawable && drawable.skin) drawable.skin.pmLastUsed = now;
+            if (drawable && drawable.pmHeldSkin) drawable.pmHeldSkin.pmLastUsed = now;
+        }
+        const skins = [];
+        for (const skin of this._allSkins) {
+            const bytes = skin ? skin.pmMemoryBytes() : 0;
+            if (bytes) skins.push({skinId: skin.id, bytes, lastUsed: skin.pmLastUsed || 0});
+        }
+        return skins;
+    }
+
+    /**
+     * Desktop fork (section 165).
+     * @returns {number} about how many bytes the skins that could be freed use
+     */
+    pmSkinBytes () {
+        let bytes = 0;
+        for (const skin of this._allSkins) {
+            if (skin) bytes += skin.pmMemoryBytes();
+        }
+        return bytes;
+    }
+
+    /**
+     * Desktop fork (section 165): free a skin; its id stays valid and it is made again when it is next read.
+     * @param {!int} skinId - a skin from pmFreeableSkins
+     */
+    pmFreeSkin (skinId) {
+        const skin = this._allSkins[skinId];
+        if (skin && skin.pmMemoryBytes()) skin.pmFree();
+    }
+
+    /**
      * Create a new PenSkin - a skin which implements a Scratch pen layer.
      * @returns {!int} the ID for the new skin.
      */
@@ -2386,6 +2426,8 @@ class RenderWebGL extends EventEmitter {
         // Desktop fork (section 164): a skin that was put off is made now. An SVG's image always loads a moment later:
         // until then the drawable keeps showing what it shows, not nothing.
         if (skin && skin.pmReady) skin.pmReady();
+        // Desktop fork (section 165): for the memory budget
+        if (skin) skin.pmLastUsed = this.pmClock;
         drawable.pmHeldSkin = null;
         if (skin && skin.pmLoading && drawable.skin) {
             drawable.pmHeldSkin = skin;
