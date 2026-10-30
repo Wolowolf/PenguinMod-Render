@@ -1,6 +1,7 @@
 const twgl = require("twgl.js");
 
 const Skin = require("./Skin");
+const log = require("./util/log");
 
 class BitmapSkin extends Skin {
   /**
@@ -23,6 +24,7 @@ class BitmapSkin extends Skin {
    * Dispose of this object. Do not use it after calling this method.
    */
   dispose() {
+    this._pmCancel();
     if (this._texture) {
       this._renderer.gl.deleteTexture(this._texture);
       this._texture = null;
@@ -50,6 +52,47 @@ class BitmapSkin extends Skin {
   }
 
   /**
+   * Desktop fork (section 164): this skin's size and rotation center are known; decode its image when it is needed.
+   * @param {int} width - the image's width
+   * @param {int} height - the image's height
+   * @param {int} costumeResolution - The resolution to use for this bitmap.
+   * @param {Array<number>} rotationCenter - rotation center for the bitmap
+   * @param {Function} decode - returns the image, at once
+   * @param {*} source - what it is decoded from
+   */
+  deferBitmap(width, height, costumeResolution, rotationCenter, decode, source) {
+    this._costumeResolution = costumeResolution;
+    this._textureSize = [width, height];
+    this._rotationCenter[0] = rotationCenter[0];
+    this._rotationCenter[1] = rotationCenter[1];
+    this._pmDefer(
+      ["_texture", "_silhouette"],
+      () => {
+        let image;
+        try {
+          image = decode();
+        } catch (e) {
+          log.warn("Costume could not be decoded", e);
+          super.setEmptyImageData();
+          return;
+        }
+        this.setBitmap(image, costumeResolution, rotationCenter);
+      },
+      source,
+    );
+    this._pmDeferredArgs = [costumeResolution, rotationCenter];
+  }
+
+  /**
+   * Desktop fork (section 164): the image of a skin that was put off, decoded in the background.
+   * @param {ImageBitmap} image - its image
+   */
+  setDeferredBitmap(image) {
+    if (!this._pmMake) return;
+    this.setBitmap(image, ...this._pmDeferredArgs);
+  }
+
+  /**
    * Set the contents of this skin to a snapshot of the provided bitmap data.
    * @param {ImageData|HTMLImageElement|HTMLCanvasElement|HTMLVideoElement} bitmapData - new contents for this skin.
    * @param {int} [costumeResolution=1] - The resolution to use for this bitmap.
@@ -58,6 +101,7 @@ class BitmapSkin extends Skin {
    * @fires Skin.event:WasAltered
    */
   setBitmap(bitmapData, costumeResolution, rotationCenter) {
+    this._pmCancel();
     if (!bitmapData.width || !bitmapData.height) {
       super.setEmptyImageData();
       return;

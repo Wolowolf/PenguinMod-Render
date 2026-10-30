@@ -56,9 +56,59 @@ class Skin {
     }
 
     /**
+     * Desktop fork (section 164): put off the costly part of making this skin. Reading or writing any of these fields
+     * first makes the skin, so whoever reads them (the renderer or an extension) always finds it ready.
+     * @param {Array.<string>} fields - fields that depend on it
+     * @param {Function} make - makes the skin; these fields are plain again when it is called
+     * @param {*} source - what it is made from, for pmDeferredSource
+     */
+    _pmDefer (fields, make, source) {
+        this._pmSource = source;
+        this._pmFields = fields.map(name => [name, this[name]]);
+        this._pmMake = make;
+        for (const name of fields) {
+            Object.defineProperty(this, name, {
+                configurable: true,
+                enumerable: true,
+                get: () => {
+                    this.pmReady();
+                    return this[name];
+                },
+                set: value => {
+                    this.pmReady();
+                    this[name] = value;
+                }
+            });
+        }
+    }
+
+    /**
+     * The skin won't be made the deferred way: make its fields plain again.
+     * @protected
+     */
+    _pmCancel () {
+        if (!this._pmFields) return;
+        for (const [name, value] of this._pmFields) {
+            Object.defineProperty(this, name, {configurable: true, enumerable: true, writable: true, value});
+        }
+        this._pmFields = this._pmMake = this._pmSource = null;
+    }
+
+    /**
+     * Make this skin now if that was put off.
+     */
+    pmReady () {
+        const make = this._pmMake;
+        if (!make) return;
+        this._pmCancel();
+        make();
+    }
+
+    /**
      * Dispose of this object. Do not use it after calling this method.
      */
     dispose () {
+        this._pmCancel();
         this._id = RenderConstants.ID_NONE;
     }
 

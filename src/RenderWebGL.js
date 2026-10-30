@@ -677,6 +677,68 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
+     * Desktop fork (section 164): create a bitmap skin that is decoded when first needed.
+     * @param {int} width - the image's width
+     * @param {int} height - the image's height
+     * @param {!int} costumeResolution - The resolution to use for this bitmap.
+     * @param {!Array<number>} rotationCenter - rotation center of the skin
+     * @param {Function} decode - returns the image, at once
+     * @param {*} source - what it is decoded from, see pmDeferredSource
+     * @returns {!int} the ID for the new skin.
+     */
+    createDeferredBitmapSkin (width, height, costumeResolution, rotationCenter, decode, source) {
+        const skinId = this._nextSkinId++;
+        const newSkin = new BitmapSkin(skinId, this);
+        newSkin.deferBitmap(width, height, costumeResolution, rotationCenter, decode, source);
+        this._allSkins[skinId] = newSkin;
+        return skinId;
+    }
+
+    /**
+     * Desktop fork (section 164): create an SVG skin that is parsed when first needed.
+     * @param {Function} getSvg - returns the SVG
+     * @param {!Array<number>} rotationCenter - rotation center of the skin
+     * @param {*} source - what the SVG comes from, see pmDeferredSource
+     * @returns {!int} the ID for the new skin.
+     */
+    createDeferredSVGSkin (getSvg, rotationCenter, source) {
+        const skinId = this._nextSkinId++;
+        const newSkin = new SVGSkin(skinId, this, true);
+        newSkin.deferSVG(getSvg, rotationCenter, source);
+        this._allSkins[skinId] = newSkin;
+        return skinId;
+    }
+
+    /**
+     * Desktop fork (section 164).
+     * @param {!int} skinId - a skin
+     * @returns {*} what it will be made from; null when it is made already
+     */
+    pmDeferredSource (skinId) {
+        const skin = this._allSkins[skinId];
+        return (skin && skin._pmSource) || null;
+    }
+
+    /**
+     * Desktop fork (section 164): make a skin now if that was put off.
+     * @param {!int} skinId - a skin
+     */
+    pmPrepareSkin (skinId) {
+        const skin = this._allSkins[skinId];
+        if (skin && skin.pmReady) skin.pmReady();
+    }
+
+    /**
+     * Desktop fork (section 164): the image of a bitmap skin that was put off, decoded in the background.
+     * @param {!int} skinId - a skin
+     * @param {ImageBitmap} image - its image
+     */
+    pmSetDeferredBitmap (skinId, image) {
+        const skin = this._allSkins[skinId];
+        if (skin instanceof BitmapSkin) skin.setDeferredBitmap(image);
+    }
+
+    /**
      * Create a new PenSkin - a skin which implements a Scratch pen layer.
      * @returns {!int} the ID for the new skin.
      */
@@ -2320,7 +2382,22 @@ class RenderWebGL extends EventEmitter {
         const drawable = this._allDrawables[drawableID];
         // TODO: https://github.com/LLK/scratch-vm/issues/2288
         if (!drawable) return;
-        drawable.skin = this._allSkins[skinId];
+        const skin = this._allSkins[skinId];
+        // Desktop fork (section 164): a skin that was put off is made now. An SVG's image always loads a moment later:
+        // until then the drawable keeps showing what it shows, not nothing.
+        if (skin && skin.pmReady) skin.pmReady();
+        drawable.pmHeldSkin = null;
+        if (skin && skin.pmLoading && drawable.skin) {
+            drawable.pmHeldSkin = skin;
+            skin.pmWhenLoaded(() => {
+                if (drawable.pmHeldSkin !== skin) return;
+                drawable.pmHeldSkin = null;
+                drawable.skin = skin;
+                this.dirty = true;
+            });
+            return;
+        }
+        drawable.skin = skin;
     }
 
     /**

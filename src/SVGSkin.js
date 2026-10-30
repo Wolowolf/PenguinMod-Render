@@ -3,6 +3,7 @@ const twgl = require("twgl.js");
 const Skin = require("./Skin");
 const { loadSvgString, serializeSvgToString } = require("scratch-svg-renderer");
 const ShaderManager = require("./ShaderManager");
+const log = require("./util/log");
 
 /**
  * All scaled renderings of the SVG are stored in an array. The 1.0 scale of
@@ -20,11 +21,11 @@ class SVGSkin extends Skin {
    * @constructor
    * @extends Skin
    */
-  constructor(id, renderer) {
+  constructor(id, renderer, deferred = false) {
     super(id, renderer);
 
     /** @type {HTMLImageElement} */
-    this._svgImage = document.createElement("img");
+    this._svgImage = deferred ? null : document.createElement("img");
 
     /** @type {boolean} */
     this._svgImageLoaded = false;
@@ -36,10 +37,12 @@ class SVGSkin extends Skin {
     this._transform = [0, 0];
 
     /** @type {HTMLCanvasElement} */
-    this._canvas = document.createElement("canvas");
+    this._canvas = deferred ? null : document.createElement("canvas");
 
     /** @type {CanvasRenderingContext2D} */
-    this._context = this._canvas.getContext("2d", { willReadFrequently: true });
+    this._context = deferred
+      ? null
+      : this._canvas.getContext("2d", { willReadFrequently: true });
 
     /** @type {Array<WebGLTexture>} */
     this._scaledMIPs = [];
@@ -251,6 +254,52 @@ class SVGSkin extends Skin {
   }
 
   /**
+   * Desktop fork (section 164): parse the SVG and load its image when this skin is first needed.
+   * @param {Function} getSvg - returns the SVG
+   * @param {Array<number>} rotationCenter - rotation center of the SVG
+   * @param {*} source - what the SVG comes from
+   */
+  deferSVG(getSvg, rotationCenter, source) {
+    this._pmDefer(
+      [
+        "_svgImage",
+        "_svgImageLoaded",
+        "_canvas",
+        "_context",
+        "_size",
+        "_rotationCenter",
+        "_silhouette",
+      ],
+      () => {
+        this.pmLoading = true;
+        try {
+          this.setSVG(getSvg(), rotationCenter);
+        } catch (e) {
+          log.warn("Costume could not be parsed", e);
+          super.setEmptyImageData();
+          this._pmLoaded();
+        }
+      },
+      source,
+    );
+  }
+
+  /**
+   * Desktop fork (section 164): call back when the image of a skin that was put off has loaded.
+   * @param {Function} callback - called then
+   */
+  pmWhenLoaded(callback) {
+    (this._pmWaiting = this._pmWaiting || []).push(callback);
+  }
+
+  _pmLoaded() {
+    this.pmLoading = false;
+    const waiting = this._pmWaiting;
+    this._pmWaiting = null;
+    if (waiting) for (const callback of waiting) callback();
+  }
+
+  /**
    * Set the contents of this skin to a snapshot of the provided SVG data.
    * @param {string} svgData - new SVG to use.
    * @param {Array<number>} [rotationCenter] - Optional rotation center for the SVG. If not supplied, it will be
@@ -258,6 +307,14 @@ class SVGSkin extends Skin {
    * @fires Skin.event:WasAltered
    */
   setSVG(svgData, rotationCenter) {
+    this._pmCancel();
+    if (!this._svgImage) {
+      this._svgImage = document.createElement("img");
+      this._canvas = document.createElement("canvas");
+      this._context = this._canvas.getContext("2d", {
+        willReadFrequently: true,
+      });
+    }
     const svgTag = loadSvgString(svgData);
     const svgText = serializeSvgToString(svgTag, this._renderer.customFonts);
     this._svgImageLoaded = false;
@@ -271,10 +328,12 @@ class SVGSkin extends Skin {
     this._size[0] = width;
     this._size[1] = height;
 
+    this._svgImage.onerror = () => this._pmLoaded();
     // If there is another load already in progress, replace the old onload to effectively cancel the old load
     this._svgImage.onload = () => {
       if (width === 0 || height === 0) {
         super.setEmptyImageData();
+        this._pmLoaded();
         return;
       }
 
@@ -297,6 +356,7 @@ class SVGSkin extends Skin {
       this._svgImageLoaded = true;
 
       this.emitWasAltered();
+      this._pmLoaded();
     };
 
     this._svgImage.src = `data:image/svg+xml;utf8,${encodeURIComponent(svgText)}`;
