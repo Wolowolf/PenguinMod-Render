@@ -2842,6 +2842,7 @@ class RenderWebGL extends EventEmitter {
             'framebufferHeight' in opts &&
             opts.framebufferWidth !== this._nativeSize[0] &&
             opts.framebufferHeight !== this._nativeSize[1];
+        const framebufferScale = [0, 0];
 
         // Desktop fork (section 120): clip boxes and blend modes, only when drawing the stage or stamping
         const drawModes = opts.drawModes || null;
@@ -2941,12 +2942,13 @@ class RenderWebGL extends EventEmitter {
             // drawableScale is the "framebuffer-pixel-space" scale of the drawable, as percentages of the drawable's
             // "native size" (so 100 = same as skin's "native size", 200 = twice "native size").
             // If the framebuffer dimensions are the same as the stage's "native" size, there's no need to calculate it.
-            const drawableScale = framebufferSpaceScaleDiffers
-                ? [
-                    (drawable.scale[0] * opts.framebufferWidth) / this._nativeSize[0],
-                    (drawable.scale[1] * opts.framebufferHeight) / this._nativeSize[1]
-                ]
-                : drawable._scale; // Desktop fork (section 169): only read here; the getter makes a new array
+            // Desktop fork (sections 169, 173): the getter and a new array here made 3 arrays per sprite per frame; skins only read this during the call.
+            let drawableScale = drawable._scale;
+            if (framebufferSpaceScaleDiffers) {
+                framebufferScale[0] = (drawableScale[0] * opts.framebufferWidth) / this._nativeSize[0];
+                framebufferScale[1] = (drawableScale[1] * opts.framebufferHeight) / this._nativeSize[1];
+                drawableScale = framebufferScale;
+            }
             const drawableTransform = drawable.transform || __noTransform;
 
             // If the skin or texture isn't ready yet, skip it.
@@ -2985,8 +2987,12 @@ class RenderWebGL extends EventEmitter {
                 data[offset + 3] = matrix[5];
                 data[offset + 4] = matrix[12];
                 data[offset + 5] = matrix[13];
-                batch.drawables[batchCount] = drawable;
-                batch.scales[batchCount] = drawableScale;
+                // Desktop fork (section 173): read only for a run too short to batch, so not grown to every sprite each frame.
+                // A copy, since drawableScale is reused for the next sprite.
+                if (batchCount < BATCH_MIN) {
+                    batch.drawables[batchCount] = drawable;
+                    batch.scales[batchCount] = [drawableScale[0], drawableScale[1]];
+                }
                 batchCount++;
                 continue;
             }
