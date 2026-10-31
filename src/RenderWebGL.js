@@ -1401,6 +1401,28 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
+     * Desktop fork (section 172): quick check for "if on edge, bounce". The outline always lies inside the box of the
+     * costume's whole picture, so when that box is more than 1 pixel (for rounding) inside the given area, the outline
+     * is too and need not be worked out. Only with a known outline: working it out has effects of its own (later
+     * getFastBounds answers use it). NaN answers false.
+     * @param {int} drawableID ID of the Drawable to check.
+     * @param {number} halfWidth Half the width of the area, centred on 0, 0.
+     * @param {number} halfHeight Half the height of the area.
+     * @return {boolean} True when the Drawable surely does not reach the area's edges; false means "ask getBounds".
+     */
+    pmIsWellInside (drawableID, halfWidth, halfHeight) {
+        const drawable = this._allDrawables[drawableID];
+        if (this._debugCanvas || drawable.needsConvexHullPoints()) return false;
+        if (drawable._transformDirty) drawable._calculateTransform();
+        // The same maths as Rectangle.initFromModelMatrix, without making a Rectangle
+        const m = drawable._uniforms.u_modelMatrix;
+        const x = Math.abs(0.5 * m[0]) + Math.abs(0.5 * m[4]);
+        const y = Math.abs(0.5 * m[1]) + Math.abs(0.5 * m[5]);
+        return m[12] - x > 1 - halfWidth && m[12] + x < halfWidth - 1 &&
+            m[13] - y > 1 - halfHeight && m[13] + y < halfHeight - 1;
+    }
+
+    /**
      * Get the precise bounds for a Drawable around the top slice.
      * Used for positioning speech bubbles more closely to the sprite.
      * @param {int} drawableID ID of Drawable to get bubble bounds for.
