@@ -1096,6 +1096,27 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
+     * Desktop fork (section 171): find a drawable in part of the draw list, looking from both ends at once, as clones
+     * are mostly near one end of a long list.
+     * @param {int} drawableID The drawable to find.
+     * @param {int} startIndex First index to look at.
+     * @param {int} endIndex End of the part (non-inclusive).
+     * @return {int} Its index, or endIndex if it is not there.
+     */
+    _pmFindInDrawList (drawableID, startIndex, endIndex) {
+        const list = this._drawList;
+        let low = startIndex;
+        let high = endIndex - 1;
+        while (low <= high) {
+            if (list[low] === drawableID) return low;
+            if (list[high] === drawableID) return high;
+            low++;
+            high--;
+        }
+        return endIndex;
+    }
+
+    /**
      * Destroy a Drawable, removing it from the scene.
      * @param {int} drawableID The ID of the Drawable to remove.
      * @param {string} group Group name that the drawable belongs to
@@ -1117,15 +1138,16 @@ class RenderWebGL extends EventEmitter {
         const currentLayerGroup = this._layerGroups[group];
         const endIndex = this._endIndexForKnownLayerGroup(currentLayerGroup);
 
-        let index = currentLayerGroup.drawListOffset;
-        while (index < endIndex) {
-            if (this._drawList[index] === drawableID) {
-                break;
-            }
-            index++;
-        }
+        const index = this._pmFindInDrawList(drawableID, currentLayerGroup.drawListOffset, endIndex);
         if (index < endIndex) {
-            this._drawList.splice(index, 1);
+            // Desktop fork (section 171): move only the shorter side of the list; shift() copies nothing on long lists
+            const list = this._drawList;
+            if (index < list.length / 2) {
+                for (let i = index; i > 0; i--) list[i] = list[i - 1];
+                list.shift();
+            } else {
+                list.splice(index, 1);
+            }
             this._updateOffsets('delete', currentLayerGroup.groupIndex);
         } else {
             log.warn(
@@ -1178,13 +1200,7 @@ class RenderWebGL extends EventEmitter {
         const startIndex = currentLayerGroup.drawListOffset;
         const endIndex = this._endIndexForKnownLayerGroup(currentLayerGroup);
 
-        let oldIndex = startIndex;
-        while (oldIndex < endIndex) {
-            if (this._drawList[oldIndex] === drawableID) {
-                break;
-            }
-            oldIndex++;
-        }
+        const oldIndex = this._pmFindInDrawList(drawableID, startIndex, endIndex);
 
         if (oldIndex < endIndex) {
             // Remove drawable from the list.
