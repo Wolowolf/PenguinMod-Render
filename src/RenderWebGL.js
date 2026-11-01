@@ -19,6 +19,17 @@ const EffectTransform = require('./EffectTransform');
 const CanvasMeasurementProvider = require('./util/canvas-measurement-provider');
 const log = require('./util/log');
 const DrawModes = require('./DrawModes');
+const TouchingGrid = require('./TouchingGrid');
+
+// Desktop fork (section 190): a touching grid is used for lists of at least this many candidates, once this many
+// questions were asked about the list in a frame; fewer are quicker to compare one by one.
+const GRID_MIN_CANDIDATES = 64;
+const GRID_MIN_QUERIES = 32;
+// For touching grids: 0 = a skin left out of touching, 1 = usable, 2 = prepared at every question, so not usable.
+const touchingGridSkinKind = skin => {
+    if (!skin || skin instanceof TextBubbleSkin) return 0;
+    return skin.constructor === SVGSkin || skin.constructor === BitmapSkin ? 1 : 2;
+};
 
 // Desktop fork (section 163): shorter runs are drawn one by one, since an instanced call has its own setup
 const BATCH_MIN = 4;
@@ -292,6 +303,13 @@ class RenderWebGL extends EventEmitter {
         this._touchingChanges = 0;
         // Touching tables, one per list of candidate IDs (see _cachedCandidatesTouching).
         this._touchingTables = new WeakMap();
+        // Desktop fork (section 190): touching grids by the first ID of their list, the drawables that changed since
+        // the last draw (null until a grid is in use; see _gridCandidatesTouching), and how many of _touchingChanges
+        // came from a drawable. pmNoTouchingGrid turns the grids off.
+        this._touchingGrids = new Map();
+        this._touchingLog = null;
+        this._touchingDrawableChanges = 0;
+        this.pmNoTouchingGrid = false;
 
         this.dirty = true;
 
@@ -1249,6 +1267,7 @@ class RenderWebGL extends EventEmitter {
     draw () {
         // A new frame: forget all cached touching data.
         this._touchingEpoch++;
+        if (this._touchingLog !== null) this._touchingLog.length = 0;
         // practically doesnt matter with XR enabled
         if (!this.dirty) {
             return;
@@ -2321,6 +2340,10 @@ class RenderWebGL extends EventEmitter {
      */
     _cachedCandidatesTouching (drawableID, candidateIDs) {
         if (candidateIDs.length < 8) return null;
+        if (candidateIDs.length >= GRID_MIN_CANDIDATES && !this.pmNoTouchingGrid) {
+            const result = this._gridCandidatesTouching(drawableID, candidateIDs);
+            if (result !== null) return result;
+        }
         let table = this._touchingTables.get(candidateIDs);
         if (!table) {
             table = {epoch: -1, changes: -1, silhouettes: -1, source: null, ids: null, drawables: null, rects: null};
@@ -2401,6 +2424,156 @@ class RenderWebGL extends EventEmitter {
             }
         }
         return result;
+    }
+
+    /**
+     * Desktop fork (section 190): touching grid. A large list asked about many times in a frame keeps its candidates
+     * in a grid (TouchingGrid), so a question compares only the candidates near the asker. Only drawables that changed
+     * since the last question are prepared and moved in the grid (_touchingLog); each frame, and after a drawable is
+     * created, removed or reordered or a silhouette updated, all are prepared again, as one full check would.
+     * @param {int} drawableID - ID for drawable of query.
+     * @param {Array<int>} candidateIDs - Candidates for touching query, visible or not.
+     * @return {?Array< {id, drawable, intersection} >} the same as _candidatesTouching(drawableID, the visible
+     * candidateIDs), or null when the grid can't be used.
+     * @private
+     */
+    _gridCandidatesTouching (drawableID, candidateIDs) {
+        let grid = this._touchingGrids.get(candidateIDs[0]);
+        if (!grid) {
+            // Sprites that are gone leave their grid here; lists are few, so start over now and then.
+            if (this._touchingGrids.size >= 64) this._touchingGrids.clear();
+            grid = new TouchingGrid();
+            this._touchingGrids.set(candidateIDs[0], grid);
+        }
+        if (grid.epoch !== this._touchingEpoch) {
+            grid.active = grid.queries >= GRID_MIN_QUERIES;
+            grid.queries = 0;
+            grid.epoch = this._touchingEpoch;
+            grid.unusable = false;
+        }
+        grid.queries++;
+        if (grid.queries >= GRID_MIN_QUERIES) grid.active = true;
+        if (!grid.active || grid.unusable) return null;
+        if (this._touchingLog === null) this._touchingLog = [];
+
+        // Like _candidatesTouching: nothing to do (and nothing prepared) when the asker has no bounds.
+        const bounds = this._touchingBounds(drawableID);
+        if (bounds === null) return [];
+        if (!this._syncTouchingGrid(grid, candidateIDs, grid.syncedEpoch === this._touchingEpoch)) {
+            grid.unusable = true;
+            grid.syncedEpoch = -1;
+            return null;
+        }
+        grid.syncedEpoch = this._touchingEpoch;
+
+        const hits = grid.query(bounds);
+        const result = [];
+        for (let h = 0; h < hits.length; h++) {
+            const i = hits[h];
+            const id = grid.ids[i];
+            const drawable = grid.drawables[i];
+            if (id === drawableID || !drawable._visible) continue;
+            if (!this.allowPrivateSkinAccess && drawable.skin.private) continue;
+            result.push({id, drawable, intersection: Rectangle.intersect(bounds, grid.rects[i])});
+        }
+        return result;
+    }
+
+    /**
+     * Bring a touching grid up to date.
+     * @param {TouchingGrid} grid - the grid.
+     * @param {Array<int>} candidateIDs - its list of candidates.
+     * @param {boolean} sameFrame - false if all candidates need preparing again.
+     * @return {boolean} false if the grid can't be used.
+     * @private
+     */
+    _syncTouchingGrid (grid, candidateIDs, sameFrame) {
+        const log = this._touchingLog;
+        // Preparing can change skins, so this goes on until a round changes nothing. Three rounds are plenty.
+        for (let round = 0; round < 3; round++) {
+            const structure = this._touchingChanges - this._touchingDrawableChanges;
+            if (
+                sameFrame && round === 0 &&
+                grid.source === candidateIDs && grid.length === candidateIDs.length &&
+                grid.structure === structure && grid.silhouettes === Silhouette.updateCount &&
+                grid.logPosition === log.length
+            ) {
+                return true;
+            }
+            const everything = !sameFrame || round > 0 ||
+                grid.source !== candidateIDs || grid.length !== candidateIDs.length ||
+                grid.structure !== structure || grid.silhouettes !== Silhouette.updateCount;
+            if (everything) {
+                if (!this._touchingGridListSame(grid, candidateIDs) && !grid.setList(
+                    candidateIDs, this._allDrawables, touchingGridSkinKind
+                )) {
+                    return false;
+                }
+                grid.source = candidateIDs;
+                grid.structure = structure;
+                grid.silhouettes = Silhouette.updateCount;
+                grid.logPosition = log.length;
+                for (let i = 0; i < grid.length; i++) {
+                    if (!this._placeInTouchingGrid(grid, i)) return false;
+                }
+                grid.fitCellSize((this._xRight - this._xLeft) * (this._yTop - this._yBottom));
+            } else {
+                const end = log.length;
+                for (let l = grid.logPosition; l < end; l++) {
+                    const drawable = log[l];
+                    const i = drawable._id < grid.indexById.length ? grid.indexById[drawable._id] : -1;
+                    if (i >= 0 && i < grid.length && grid.drawables[i] === drawable) {
+                        if (!this._placeInTouchingGrid(grid, i)) return false;
+                    }
+                }
+                grid.logPosition = end;
+            }
+            if (
+                grid.logPosition === log.length && grid.silhouettes === Silhouette.updateCount &&
+                grid.structure === this._touchingChanges - this._touchingDrawableChanges
+            ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @param {TouchingGrid} grid - a touching grid.
+     * @param {Array<int>} candidateIDs - a list of candidates.
+     * @return {boolean} true if the grid already holds this list.
+     * @private
+     */
+    _touchingGridListSame (grid, candidateIDs) {
+        const count = candidateIDs.length;
+        if (grid.length !== count) return false;
+        for (let i = 0; i < count; i++) {
+            const id = candidateIDs[count - 1 - i];
+            if (grid.ids[i] !== id || grid.drawables[i] !== this._allDrawables[id]) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Prepare one candidate and put it in its place in a touching grid.
+     * @param {TouchingGrid} grid - the grid.
+     * @param {int} i - the candidate's index.
+     * @return {boolean} false if the grid can't be used any more.
+     * @private
+     */
+    _placeInTouchingGrid (grid, i) {
+        const drawable = grid.drawables[i];
+        const skin = drawable.skin;
+        if (skin !== grid.skins[i]) {
+            if (touchingGridSkinKind(skin) === 2) return false;
+            grid.skins[i] = skin;
+        }
+        if (!skin || skin instanceof TextBubbleSkin || !drawable._visible) {
+            grid.remove(i);
+            return true;
+        }
+        grid.place(i, this._getTouchingCandidateBounds(drawable));
+        return true;
     }
 
     /**

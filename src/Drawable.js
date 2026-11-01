@@ -186,7 +186,21 @@ class Drawable {
      */
     _clearTouchingCache () {
         this._touchingCacheEpoch = -1;
-        this._renderer._touchingChanges++;
+        const renderer = this._renderer;
+        renderer._touchingChanges++;
+        // Desktop fork (section 190): the touching grids read these
+        renderer._touchingDrawableChanges++;
+        if (renderer._touchingLog !== null) renderer._touchingLog.push(this);
+    }
+
+    // Desktop fork (section 190): an extension writing _skin directly must reach the touching grids too.
+    get _skin () {
+        return this._skinValue;
+    }
+
+    set _skin (newSkin) {
+        this._skinValue = newSkin;
+        this._clearTouchingCache();
     }
 
     /**
