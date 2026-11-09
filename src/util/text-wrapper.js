@@ -27,6 +27,8 @@ class TextWrapper {
     constructor (measurementProvider) {
         this._measurementProvider = measurementProvider;
         this._cache = {};
+        // Desktop fork (section 214): how many texts the cache holds; it is emptied at CACHE_LIMIT
+        this._cacheSize = 0;
     }
 
     /**
@@ -103,10 +105,20 @@ class TextWrapper {
             lines.push(currentLine);
         }
 
+        // Desktop fork (section 214): a speech bubble whose text changes every frame ("HP 658", "HP 659", ...) kept every
+        // text it ever showed, for as long as the bubble stayed; the cache is emptied when it is full instead
+        if (this._cacheSize >= TextWrapper.CACHE_LIMIT) {
+            this._cache = {};
+            this._cacheSize = 0;
+        }
         this._cache[cacheKey] = lines;
+        this._cacheSize++;
         this._measurementProvider.endMeasurementSession(measurementSession);
         return lines;
     }
 }
+
+// Desktop fork (section 214): the most texts a wrapper remembers
+TextWrapper.CACHE_LIMIT = 200;
 
 module.exports = TextWrapper;
